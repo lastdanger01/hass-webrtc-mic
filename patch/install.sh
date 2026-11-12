@@ -13,22 +13,43 @@
 set -u
 
 REPO="lastdanger01/hass-webrtc-mic"
-TAG="v1.0.9"
 
-# Resolve the tag to its commit SHA at run time. raw.githubusercontent.com
-# caches by URL and a force-pushed tag can keep serving the previous file
-# for a while, so we download from the immutable SHA instead. Resolving it
-# here (instead of hardcoding it) keeps this script correct even when the
-# tag is later re-pointed at a new commit.
+# The release to install from. Do NOT hardcode this - a hardcoded tag was
+# exactly the bug in v1.0.10: the script asked for a file that only exists
+# in a newer release, and every download 404'd.
+#   TAG=... curl ... | sudo bash    -> pin a specific release
+#   (unset)                        -> use the latest release
+TAG="${TAG:-}"
+
+api_get() { curl -sSL "$1" 2>/dev/null; }
+
+# 1. Which release?
+if [ -z "$TAG" ]; then
+    TAG=$(api_get "https://api.github.com/repos/$REPO/releases/latest" \
+          | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+    if [ -z "$TAG" ]; then
+        TAG=$(api_get "https://api.github.com/repos/$REPO/tags" \
+              | sed -n 's/.*"name": *"\(v[0-9][^"]*\)".*/\1/p' | head -1)
+    fi
+fi
+if [ -z "$TAG" ]; then
+    echo "[錯誤] 無法確定要安裝的版本（無法取得 release 資訊）。" >&2
+    echo "       請改用指定版本：" >&2
+    echo "       TAG=v1.0.10 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.10/patch/install.sh | sudo bash" >&2
+    exit 1
+fi
+
+# 2. Resolve the tag to its commit SHA. raw.githubusercontent.com caches by
+#    URL, so we download from the immutable SHA instead of the tag.
 resolve_sha() {
     sha=""
     if command -v git >/dev/null 2>&1; then
         sha=$(git ls-remote "https://github.com/$REPO.git" "refs/tags/$TAG^{}" 2>/dev/null | cut -f1)
         [ -z "$sha" ] && sha=$(git ls-remote "https://github.com/$REPO.git" "refs/tags/$TAG" 2>/dev/null | cut -f1)
     fi
-    if [ -z "$sha" ] && command -v curl >/dev/null 2>&1; then
-        sha=$(curl -sSL "https://api.github.com/repos/$REPO/commits/$TAG" 2>/dev/null \
-              | sed -n 's/.*"sha": *\"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
+    if [ -z "$sha" ]; then
+        sha=$(api_get "https://api.github.com/repos/$REPO/commits/$TAG" \
+              | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
     fi
     echo "$sha"
 }
@@ -112,19 +133,23 @@ else
   exit 1
 fi
 
-for f in video-rtc.js.patch video-rtc.js.v361.patch video-rtc.js.v360.patch \
-         webrtc-camera.js.patch webrtc-camera.js.v361.patch webrtc-camera.js.v360.patch \
-         video-rtc.js.racefix.patch \
-         apply_patch.py; do
-  if ! fetch "$BASE_URL/$f$CACHE_BUST" "$WORK/$f"; then
-    echo "    [錯誤] 下載 $f 失敗"
-    exit 1
-  fi
-  if [ ! -s "$WORK/$f" ]; then
-    echo "    [錯誤] $f 是空的（下載失敗）"
-    exit 1
+# 先檢查所有必要檔案是否存在，一次列出所有缺檔（不要下載到一半才發現缺檔）
+MISSING=""
+for f in $REQUIRED; do
+  if ! fetch "$BASE_URL/$f$CACHE_BUST" "$WORK/$f" 2>/dev/null || [ ! -s "$WORK/$f" ]; then
+    MISSING="$MISSING $f"
+    rm -f "$WORK/$f"
   fi
 done
+if [ -n "$MISSING" ]; then
+  echo "    [錯誤] 版本 $TAG 缺少下列檔案："
+  for f in $MISSING; do echo "       - $f"; done
+  echo
+  echo "       這代表安裝器跟 release 版本不一致。請用最新的安裝指令，或指定版本："
+  echo "       TAG=v1.0.10 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.10/patch/install.sh | sudo bash"
+  echo "       檔案沒有被修改。"
+  exit 1
+fi
 echo "    OK"
 echo
 
