@@ -1,0 +1,17 @@
+{
+  "domain": "webrtc_mic",
+  "name": "WebRTC Camera with Microphone",
+  "codeowners": [
+    "@lastdanger01"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "lovelace"
+  ],
+  "documentation": "https://github.com/lastdanger01/hass-webrtc-mic",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/lastdanger01/hass-webrtc-mic/issues",
+  "requirements": [],
+  "version": "v1.0.0"
+}

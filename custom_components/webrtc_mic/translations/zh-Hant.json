@@ -1,0 +1,88 @@
+{
+  "config": {
+    "abort": {
+      "arch": "不支援的作業系統架構：{uname}",
+      "single_instance_allowed": "已經設定完成，只能設定一個實例。"
+    },
+    "error": {
+      "connect": "無法連線到 go2rtc 伺服器"
+    },
+    "step": {
+      "user": {
+        "title": "go2rtc 網址",
+        "description": "選擇 [go2rtc]({go2rtc_url}) 串流伺服器版本：\n1. 留空則使用內建的 go2rtc 版本（*一般使用者*）\n2. 若你安裝了 [go2rtc]({go2rtc_addon_url}) 或 [Frigate 12+]({frigate_url}) 附加元件，請填入 `{local_url}`（*進階使用者*）\n3. 若你在其他伺服器上執行 go2rtc，請填入自訂網址（*駭客*）",
+        "data": {
+          "url": "網址"
+        }
+      },
+      "config": {
+        "title": "go2rtc 設定",
+        "description": "路徑：`{path}`",
+        "data": {
+          "api": "在 1984 埠公開 WebUI",
+          "rtsp": "在 8554 埠公開 RTSP",
+          "username": "公開的使用者名稱（Web 與 RTSP）",
+          "password": "公開的密碼（Web 與 RTSP）"
+        }
+      }
+    }
+  },
+  "services": {
+    "create_link": {
+      "name": "建立連結",
+      "description": "為串流建立暫時性或永久連結（填入 `url` 或 `entity`）",
+      "fields": {
+        "link_id": {
+          "name": "連結 ID",
+          "description": "建立隨機或永久的連結 ID"
+        },
+        "url": {
+          "name": "網址",
+          "description": "指向 RTSP 串流的連結"
+        },
+        "entity": {
+          "name": "實體",
+          "description": "攝影機 entity_id"
+        },
+        "open_limit": {
+          "name": "開啟次數上限",
+          "description": "連結可被開啟幾次（0 表示不限）"
+        },
+        "time_to_live": {
+          "name": "存活時間",
+          "description": "連結存活幾秒（0 表示不限）"
+        }
+      }
+    },
+    "dash_cast": {
+      "name": "DashCast",
+      "description": "透過 DashCast 應用程式將串流投影到 Chromecast 裝置",
+      "fields": {
+        "entity_id": {
+          "name": "媒體實體",
+          "description": "media player 的 entity_id"
+        },
+        "url": {
+          "name": "網址",
+          "description": "指向 RTSP 串流的連結"
+        },
+        "entity": {
+          "name": "實體",
+          "description": "攝影機 entity_id"
+        },
+        "extra": {
+          "name": "額外參數",
+          "description": "額外的卡片參數"
+        },
+        "force": {
+          "name": "強制啟動",
+          "description": "強制重新啟動 DashCast 應用程式"
+        },
+        "hass_url": {
+          "name": "Hass 網址",
+          "description": "Hass 伺服器的手動基底網址"
+        }
+      }
+    }
+  }
+}
