@@ -1,9 +1,9 @@
---- webrtc-camera.js.orig
+--- webrtc-camera.js
 +++ webrtc-camera.js
 @@ -1,5 +1,5 @@
  /** Chrome 63+, Safari 11.1+ */
 -import {VideoRTC} from './video-rtc.js?v=1.9.4';
-+import {VideoRTC} from './video-rtc.js?v=1.9.12';
++import {VideoRTC} from './video-rtc.js?v=1.9.13';
  import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
  
  class WebRTCCamera extends VideoRTC {
@@ -18,7 +18,7 @@
      }
  
      renderDigitalPTZ() {
-@@ -471,6 +475,7 @@
+@@ -471,12 +475,20 @@
                      right: 5px;
                      bottom: 5px;
                      display: flex;
@@ -26,20 +26,19 @@
                  }
                  .space {
                      width: 100%;
-@@ -478,6 +483,13 @@
+                 }
                  .volume {
                      display: none;
-                 }
++                }
 +                .microphone {
 +                    display: none;
 +                    color: #ff5252;
 +                }
 +                .microphone.active {
 +                    color: #00c853;
-+                }
+                 }
                  .stream {
                      padding-top: 2px;
-                     margin-left: 2px;
 @@ -498,7 +510,8 @@
                      <ha-icon class="pictureinpicture" icon="mdi:picture-in-picture-bottom-right"></ha-icon>
                      <span class="stream">${this.streamName}</span>

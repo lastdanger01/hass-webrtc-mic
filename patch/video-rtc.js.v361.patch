@@ -1,4 +1,4 @@
---- video-rtc.js.orig
+--- video-rtc.js
 +++ video-rtc.js
 @@ -140,6 +140,74 @@
           * @type {Object.<string,Function>}
@@ -75,12 +75,10 @@
      }
  
      /**
-@@ -164,17 +232,40 @@
+@@ -164,14 +232,37 @@
       * https://developer.chrome.com/blog/autoplay/
       */
      play() {
--        this.video.play().catch(() => {
--            if (!this.video.muted) {
 +        this.video.play().catch(er => {
 +            // Only a real autoplay block (NotAllowedError) justifies muting.
 +            // AbortError just means a new load/pause interrupted the request -
@@ -89,17 +87,15 @@
 +                // Autoplay with sound was blocked by the browser. Remember that
 +                // we muted it ourselves so a later user gesture can restore it.
 +                this.autoMuted = true;
-                 this.video.muted = true;
--                this.video.play().catch(er => {
--                    console.warn(er);
++                this.video.muted = true;
 +                this.video.play().catch(e2 => {
 +                    console.warn(e2);
-                 });
-             }
-         });
-     }
- 
-     /**
++                });
++            }
++        });
++    }
++
++    /**
 +     * Restore sound after the browser auto-muted the element because autoplay
 +     * with audio was blocked. Must be called from a user gesture handler.
 +     * @return {boolean} true if the sound was restored
@@ -108,18 +104,22 @@
 +        if (!this.video || !this.autoMuted) return false;
 +        this.autoMuted = false;
 +        this.video.muted = false;
-+        this.video.play().catch(() => {
+         this.video.play().catch(() => {
+-            if (!this.video.muted) {
+-                this.video.muted = true;
+-                this.video.play().catch(er => {
+-                    console.warn(er);
+-                });
+-            }
+-        });
 +            // still blocked - fall back to muted again
 +            this.autoMuted = true;
 +            this.video.muted = true;
 +        });
 +        return true;
-+    }
-+
-+    /**
-      * Send message to server via WebSocket
-      * @param {Object} value
-      */
+     }
+ 
+     /**
 @@ -185,7 +276,7 @@
      /** @param {Function} isSupported */
      codecs(isSupported) {
@@ -129,7 +129,30 @@
              .filter(codec => isSupported(`video/mp4; codecs="${codec}"`)).join();
      }
  
-@@ -317,7 +408,7 @@
+@@ -299,10 +390,18 @@
+ 
+         this.connectTS = Date.now();
+ 
+-        this.ws = new WebSocket(this.wsURL);
+-        this.ws.binaryType = 'arraybuffer';
+-        this.ws.addEventListener('open', () => this.onopen());
+-        this.ws.addEventListener('close', () => this.onclose());
++        // Keep a reference to this socket. The `close` event fires
++        // asynchronously, so by the time it arrives `this.ws` may already
++        // point at a newer socket - enableMicrophone() closes the old one
++        // and reconnects to add the sendonly audio transceiver. Acting on the
++        // stale event would kill the new socket, so the microphone track
++        // would never reach the camera.
++        const ws = this.ws = new WebSocket(this.wsURL);
++        ws.binaryType = 'arraybuffer';
++        ws.addEventListener('open', () => this.onopen());
++        ws.addEventListener('close', () => {
++            if (this.ws === ws) this.onclose();
++        });
+ 
+         return true;
+     }
+@@ -317,7 +416,7 @@
          this.pcState = WebSocket.CLOSED;
          if (this.pc) {
              this.pc.getSenders().forEach(sender => {
@@ -138,7 +161,20 @@
              });
              this.pc.close();
              this.pc = null;
-@@ -350,23 +441,23 @@
+@@ -333,6 +432,12 @@
+     onopen() {
+         // CONNECTING => OPEN
+         this.wsState = WebSocket.OPEN;
++
++        // The socket may have been closed or replaced between the `open`
++        // event firing and this handler running. Without this guard the card
++        // dies with "null is not an object (evaluating
++        // 'this.ws.addEventListener')" and stops sending the microphone.
++        if (!this.ws) return;
+ 
+         this.ws.addEventListener('message', ev => {
+             if (typeof ev.data === 'string') {
+@@ -350,23 +455,23 @@
  
          const modes = [];
  
@@ -167,7 +203,7 @@
              if (modes.length) {
                  this.onmessage['mjpeg'] = msg => {
                      if (msg.type !== 'error' || msg.value.indexOf(modes[0]) !== 0) return;
-@@ -490,7 +581,7 @@
+@@ -490,7 +595,7 @@
          const pc = new RTCPeerConnection(this.pcConfig);
  
          pc.addEventListener('icecandidate', ev => {
@@ -176,7 +212,7 @@
  
              const candidate = ev.candidate ? ev.candidate.toJSON().candidate : '';
              this.send({type: 'webrtc/candidate', value: candidate});
-@@ -518,7 +609,7 @@
+@@ -518,7 +623,7 @@
          this.onmessage['webrtc'] = msg => {
              switch (msg.type) {
                  case 'webrtc/candidate':
@@ -185,7 +221,7 @@
  
                      pc.addIceCandidate({candidate: msg.value, sdpMid: '0'}).catch(er => {
                          console.warn(er);
-@@ -530,7 +621,7 @@
+@@ -530,7 +635,7 @@
                      });
                      break;
                  case 'error':
@@ -194,7 +230,7 @@
                      pc.close();
              }
          };
-@@ -549,18 +640,18 @@
+@@ -549,18 +654,18 @@
       */
      async createOffer(pc) {
          try {
@@ -219,7 +255,7 @@
                  pc.addTransceiver(kind, {direction: 'recvonly'});
              }
          }
-@@ -580,12 +671,16 @@
+@@ -580,12 +685,16 @@
  
              /** @type {MediaStream} */
              const stream = video2.srcObject;

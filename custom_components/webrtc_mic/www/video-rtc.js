@@ -390,10 +390,18 @@ export class VideoRTC extends HTMLElement {
 
         this.connectTS = Date.now();
 
-        this.ws = new WebSocket(this.wsURL);
-        this.ws.binaryType = 'arraybuffer';
-        this.ws.addEventListener('open', () => this.onopen());
-        this.ws.addEventListener('close', () => this.onclose());
+        // Keep a reference to this socket. The `close` event fires
+        // asynchronously, so by the time it arrives `this.ws` may already
+        // point at a newer socket - enableMicrophone() closes the old one
+        // and reconnects to add the sendonly audio transceiver. Acting on the
+        // stale event would kill the new socket, so the microphone track
+        // would never reach the camera.
+        const ws = this.ws = new WebSocket(this.wsURL);
+        ws.binaryType = 'arraybuffer';
+        ws.addEventListener('open', () => this.onopen());
+        ws.addEventListener('close', () => {
+            if (this.ws === ws) this.onclose();
+        });
 
         return true;
     }
@@ -424,6 +432,12 @@ export class VideoRTC extends HTMLElement {
     onopen() {
         // CONNECTING => OPEN
         this.wsState = WebSocket.OPEN;
+
+        // The socket may have been closed or replaced between the `open`
+        // event firing and this handler running. Without this guard the card
+        // dies with "null is not an object (evaluating
+        // 'this.ws.addEventListener')" and stops sending the microphone.
+        if (!this.ws) return;
 
         this.ws.addEventListener('message', ev => {
             if (typeof ev.data === 'string') {

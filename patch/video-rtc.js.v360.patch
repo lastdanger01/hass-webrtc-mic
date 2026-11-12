@@ -1,4 +1,4 @@
---- video-rtc.js.orig
+--- video-rtc.js
 +++ video-rtc.js
 @@ -140,6 +140,74 @@
           * @type {Object.<string,Function>}
@@ -75,7 +75,7 @@
      }
  
      /**
-@@ -165,17 +233,39 @@
+@@ -165,14 +233,36 @@
       */
      play() {
          this.video.play().catch(er => {
@@ -96,9 +96,9 @@
                  });
              }
          });
-     }
- 
-     /**
++    }
++
++    /**
 +     * Restore sound after the browser auto-muted the element because autoplay
 +     * with audio was blocked. Must be called from a user gesture handler.
 +     * @return {boolean} true if the sound was restored
@@ -113,12 +113,9 @@
 +            this.video.muted = true;
 +        });
 +        return true;
-+    }
-+
-+    /**
-      * Send message to server via WebSocket
-      * @param {Object} value
-      */
+     }
+ 
+     /**
 @@ -186,7 +276,7 @@
      /** @param {Function} isSupported */
      codecs(isSupported) {
@@ -128,7 +125,30 @@
              .filter(codec => isSupported(`video/mp4; codecs="${codec}"`)).join();
      }
  
-@@ -318,7 +408,7 @@
+@@ -300,10 +390,18 @@
+ 
+         this.connectTS = Date.now();
+ 
+-        this.ws = new WebSocket(this.wsURL);
+-        this.ws.binaryType = 'arraybuffer';
+-        this.ws.addEventListener('open', () => this.onopen());
+-        this.ws.addEventListener('close', () => this.onclose());
++        // Keep a reference to this socket. The `close` event fires
++        // asynchronously, so by the time it arrives `this.ws` may already
++        // point at a newer socket - enableMicrophone() closes the old one
++        // and reconnects to add the sendonly audio transceiver. Acting on the
++        // stale event would kill the new socket, so the microphone track
++        // would never reach the camera.
++        const ws = this.ws = new WebSocket(this.wsURL);
++        ws.binaryType = 'arraybuffer';
++        ws.addEventListener('open', () => this.onopen());
++        ws.addEventListener('close', () => {
++            if (this.ws === ws) this.onclose();
++        });
+ 
+         return true;
+     }
+@@ -318,7 +416,7 @@
          this.pcState = WebSocket.CLOSED;
          if (this.pc) {
              this.pc.getSenders().forEach(sender => {
@@ -137,7 +157,20 @@
              });
              this.pc.close();
              this.pc = null;
-@@ -351,23 +441,23 @@
+@@ -334,6 +432,12 @@
+     onopen() {
+         // CONNECTING => OPEN
+         this.wsState = WebSocket.OPEN;
++
++        // The socket may have been closed or replaced between the `open`
++        // event firing and this handler running. Without this guard the card
++        // dies with "null is not an object (evaluating
++        // 'this.ws.addEventListener')" and stops sending the microphone.
++        if (!this.ws) return;
+ 
+         this.ws.addEventListener('message', ev => {
+             if (typeof ev.data === 'string') {
+@@ -351,23 +455,23 @@
  
          const modes = [];
  
@@ -166,7 +199,7 @@
              if (modes.length) {
                  this.onmessage['mjpeg'] = msg => {
                      if (msg.type !== 'error' || msg.value.indexOf(modes[0]) !== 0) return;
-@@ -440,24 +530,30 @@
+@@ -440,24 +544,30 @@
              const sb = ms.addSourceBuffer(msg.value);
              sb.mode = 'segments'; // segments or sequence
              sb.addEventListener('updateend', () => {
@@ -177,8 +210,9 @@
 +                if (!sb.updating && bufLen > 0) {
 +                    try {
                          const data = buf.slice(0, bufLen);
--                        bufLen = 0;
-                         sb.appendBuffer(data);
++                        sb.appendBuffer(data);
+                         bufLen = 0;
+-                        sb.appendBuffer(data);
 -                    } else if (sb.buffered && sb.buffered.length) {
 -                        const end = sb.buffered.end(sb.buffered.length - 1) - 15;
 -                        const start = sb.buffered.start(0);
@@ -187,7 +221,6 @@
 -                            ms.setLiveSeekableRange(end, end + 15);
 -                        }
 -                        // console.debug("VideoRTC.buffered", start, end);
-+                        bufLen = 0;
 +                    } catch (e) {
 +                        // console.debug(e);
                      }
@@ -212,7 +245,7 @@
                  }
              });
  
-@@ -469,7 +565,7 @@
+@@ -469,7 +579,7 @@
                      const b = new Uint8Array(data);
                      buf.set(b, bufLen);
                      bufLen += b.byteLength;
@@ -221,7 +254,7 @@
                  } else {
                      try {
                          sb.appendBuffer(data);
-@@ -485,7 +581,7 @@
+@@ -485,7 +595,7 @@
          const pc = new RTCPeerConnection(this.pcConfig);
  
          pc.addEventListener('icecandidate', ev => {
@@ -230,7 +263,7 @@
  
              const candidate = ev.candidate ? ev.candidate.toJSON().candidate : '';
              this.send({type: 'webrtc/candidate', value: candidate});
-@@ -513,7 +609,7 @@
+@@ -513,7 +623,7 @@
          this.onmessage['webrtc'] = msg => {
              switch (msg.type) {
                  case 'webrtc/candidate':
@@ -239,7 +272,7 @@
  
                      pc.addIceCandidate({candidate: msg.value, sdpMid: '0'}).catch(er => {
                          console.warn(er);
-@@ -525,7 +621,7 @@
+@@ -525,7 +635,7 @@
                      });
                      break;
                  case 'error':
@@ -248,7 +281,7 @@
                      pc.close();
              }
          };
-@@ -544,18 +640,18 @@
+@@ -544,18 +654,18 @@
       */
      async createOffer(pc) {
          try {
@@ -273,7 +306,7 @@
                  pc.addTransceiver(kind, {direction: 'recvonly'});
              }
          }
-@@ -575,12 +671,16 @@
+@@ -575,12 +685,16 @@
  
              /** @type {MediaStream} */
              const stream = video2.srcObject;
