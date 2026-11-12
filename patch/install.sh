@@ -219,8 +219,42 @@ else
   echo
 fi
 
+# --- 3.5 處理預壓縮檔 ---------------------------------------------------
+# 上游 WebRTC 整合的 www/ 裡可能帶著預先壓縮好的 .gz 檔（有些發行版會附）。
+# Caddy 看到瀏覽器送 Accept-Encoding: gzip 就會優先送 .gz，
+# 而那個 .gz 還是舊版內容 → patch 改了 .js 卻完全沒有生效。
+# 解壓縮後檢查內容，舊的就刪掉（讓伺服器直接送新的 .js）。
+echo "[4] 處理預壓縮檔 (.gz)..."
+STALE_GZ=""
+for gz in "$WWW"/*.gz; do
+  [ -f "$gz" ] || continue
+  base="${gz%.gz}"
+  if [ ! -f "$base" ]; then
+    continue
+  fi
+  # 解壓縮後比對：內容不同 → 這個 .gz 是舊版，必須移除
+  if command -v gzip >/dev/null 2>&1; then
+    inner=$(gzip -cd "$gz" 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)
+    cur=$(sha256sum "$base" 2>/dev/null | cut -d' ' -f1)
+    if [ -n "$inner" ] && [ -n "$cur" ] && [ "$inner" != "$cur" ]; then
+      STALE_GZ="$STALE_GZ $(basename "$gz")"
+    fi
+  fi
+done
+if [ -n "$STALE_GZ" ]; then
+  echo "    發現過期的預壓縮檔:$STALE_GZ"
+  echo "    這些 .gz 是舊版內容，瀏覽器會拿到它們而看不到剛剛的修改。"
+  for g in $STALE_GZ; do
+    rm -f "$WWW/$g" && echo "    已移除 $g"
+  done
+  echo "    （伺服器之後會直接提供新的 .js）"
+else
+  echo "    OK  沒有過期的預壓縮檔"
+fi
+echo
+
 # --- 4. 驗證 ------------------------------------------------------------
-echo "[4] 驗證..."
+echo "[5] 驗證..."
 FAIL=0
 
 if grep -q "mdi:microphone" "$WWW/webrtc-camera.js" 2>/dev/null; then
