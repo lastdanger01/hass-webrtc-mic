@@ -1,4 +1,3 @@
-import asyncio
 import os.path
 import platform
 
@@ -35,14 +34,24 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             url = user_input.get(CONF_URL)
+
+            # user left the field empty -> auto-detect go2rtc
             if not url:
-                # create config file first time
+                detected = await utils.detect_go2rtc(self.hass)
+                if detected:
+                    return self.async_create_entry(
+                        title="WebRTC Camera", data={CONF_URL: detected}
+                    )
+
+                # nothing found: fall back to the go2rtc.yaml wizard
                 config = self.hass.config.path("go2rtc.yaml")
                 if not os.path.isfile(config):
                     return await self.async_step_config(None)
 
+                return self.async_create_entry(title="WebRTC Camera", data={})
+
             # check if go2rtc url from user input available
-            elif not await utils.check_go2rtc(self.hass, url):
+            if not await utils.check_go2rtc(self.hass, url):
                 return self.async_show_form(
                     step_id="user",
                     data_schema=vol.Schema(
@@ -56,16 +65,16 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
 
             return self.async_create_entry(title="WebRTC Camera", data=user_input)
 
-        # check if go2rtc already exists on same server
-        tests = await asyncio.gather(
-            utils.check_go2rtc(self.hass),
-            # if go2rtc inside frigate addon with closed public port
-            utils.check_go2rtc(self.hass, "http://ccab4aaf-frigate:1984"),
-            utils.check_go2rtc(self.hass, "http://ccab4aaf-frigate-fa:1984"),
-            utils.check_go2rtc(self.hass, "http://ccab4aaf-frigate-beta:1984"),
-        )
+        # Zero-config path: probe the well-known go2rtc locations. If one
+        # answers, create the entry right away - the user never sees a form.
+        detected = await utils.detect_go2rtc(self.hass)
+        if detected:
+            return self.async_create_entry(
+                title="WebRTC Camera", data={CONF_URL: detected}
+            )
 
-        url = next((url for url in tests if url), vol.UNDEFINED)
+        # Nothing found. Fall back to a form so the user can type a URL.
+        url = await utils.check_go2rtc(self.hass) or vol.UNDEFINED
 
         return self.async_show_form(
             step_id="user",

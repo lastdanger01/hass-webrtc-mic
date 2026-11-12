@@ -8,8 +8,9 @@ import subprocess
 import zipfile
 from threading import Thread
 from typing import Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
+import asyncio
 import aiohttp
 import jwt
 import requests
@@ -17,7 +18,7 @@ from aiohttp import web
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http.auth import DATA_SIGN_SECRET, SIGN_QUERY_PARAM
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
-from homeassistant.const import MAJOR_VERSION, MINOR_VERSION
+from homeassistant.const import CONF_URL, MAJOR_VERSION, MINOR_VERSION
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_component import DATA_INSTANCES
@@ -197,6 +198,88 @@ def validate_signed_request(request: web.Request) -> bool:
         return claims["path"] == request.path
     except Exception:
         return False
+
+
+def candidate_urls(hass: HomeAssistant) -> list:
+    """Build the list of go2rtc URLs worth probing, most specific first.
+
+    Zero-config goal: the user should never have to type a go2rtc URL.
+    We look at (in order): the URL stored by the official go2rtc
+    integration, the HA-managed go2rtc API port, localhost, the docker
+    host gateway, the Frigate add-on hostnames and finally the LAN
+    address of this HA host.
+    """
+    out: list = []
+
+    def add(url):
+        if not url:
+            return
+        # normalise: always end with "/" so urljoin() behaves predictably
+        if not url.endswith("/"):
+            url += "/"
+        if url not in out:
+            out.append(url)
+
+    # 1. URL configured in the official go2rtc integration
+    try:
+        for entry in hass.config_entries.async_entries("go2rtc"):
+            add(entry.data.get(CONF_URL))
+    except Exception:
+        pass
+
+    # 2. go2rtc managed by HA itself (unix socket + internal API port)
+    add("http://localhost:11984/")
+
+    # 3. go2rtc on the same host / in the same container
+    add(DEFAULT_URL)
+    add("http://127.0.0.1:1984/")
+
+    # 4. docker host gateway (go2rtc in another container)
+    add("http://host.docker.internal:1984/")
+
+    # 5. go2rtc bundled in the Frigate add-on (closed public port)
+    for host in (
+        "ccab4aaf-frigate",
+        "ccab4aaf-frigate-fa",
+        "ccab4aaf-frigate-beta",
+    ):
+        add(f"http://{host}:1984/")
+
+    # 6. LAN address of this HA host (go2rtc on the host, not containerised)
+    try:
+        internal = hass.config.internal_url
+    except Exception:
+        internal = None
+    if internal:
+        host = urlparse(internal).hostname
+        if host:
+            add(f"http://{host}:1984/")
+
+    return out
+
+
+async def detect_go2rtc(hass: HomeAssistant) -> Optional[str]:
+    """Probe all known go2rtc locations and return the first that answers."""
+    candidates = candidate_urls(hass)
+    if not candidates:
+        return None
+
+    session = async_get_clientsession(hass)
+
+    async def probe(url: str):
+        try:
+            r = await session.head(url, timeout=2, allow_redirects=True)
+            return url if r.status < 400 else None
+        except Exception:
+            return None
+
+    results = await asyncio.gather(*(probe(url) for url in candidates))
+
+    for url, ok in zip(candidates, results):
+        if ok:
+            return url
+
+    return None
 
 
 async def check_go2rtc(hass: HomeAssistant, url: str = DEFAULT_URL) -> Optional[str]:

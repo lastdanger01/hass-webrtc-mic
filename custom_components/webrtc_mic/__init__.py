@@ -59,10 +59,21 @@ LINKS = {}  # 2 3 4
 #
 # Declaring a CONFIG_SCHEMA lets the integration be set up from YAML, so
 # the card is available even before (or without) go2rtc being reachable.
+#
+# The schema is keyed by DOMAIN: Home Assistant applies CONFIG_SCHEMA to
+# the *whole* configuration, so the schema has to describe the
+# "webrtc_mic:" block, not the top level. No default is given for the
+# domain block, so nothing is injected into the global config when the
+# user does not use YAML at all.
 CONFIG_SCHEMA = vol.Schema(
     {
-        # URL of the go2rtc server. Leave empty to use http://localhost:1984/
-        vol.Optional("url", default=utils.DEFAULT_URL): cv.string,
+        DOMAIN: vol.Schema(
+            {
+                # URL of the go2rtc server. Omit to auto-detect it.
+                vol.Optional("url"): cv.string,
+            },
+            extra=vol.ALLOW_EXTRA,
+        ),
     },
     extra=vol.ALLOW_EXTRA,
 )
@@ -75,8 +86,12 @@ HLS_SESSION = str(uuid.uuid4())
 
 async def async_setup(hass: HomeAssistant, config: dict):
     # 0. go2rtc URL from YAML (if any). The config entry overwrites it later.
+    #    Without YAML we auto-detect, so the card works out of the box.
     yaml_config = config.get(DOMAIN) or {}
-    hass.data[DOMAIN] = yaml_config.get("url") or utils.DEFAULT_URL
+    url = yaml_config.get("url")
+    if not url:
+        url = await utils.detect_go2rtc(hass) or utils.DEFAULT_URL
+    hass.data[DOMAIN] = url
 
     # 1. Serve lovelace card
     path = Path(__file__).parent / "www"
@@ -142,9 +157,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # 1. If user set custom url
     go_url = entry.data.get(CONF_URL)
 
-    # 2. Check if go2rtc running on same server
+    # 2. Check if go2rtc running on same server (auto-detect the location)
     if not go_url:
-        go_url = await utils.check_go2rtc(hass) or utils.DEFAULT_URL
+        go_url = await utils.detect_go2rtc(hass)
 
     if go_url:
         # netloc example: admin:admin@192.168.1.123:1984

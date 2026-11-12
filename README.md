@@ -32,22 +32,30 @@ the implementation has gaps. This fork fixes:
 2. Install **WebRTC Camera with Microphone**.
 3. Restart Home Assistant.
 4. Go to *Settings → Devices & Services → Add Integration* and search for
-   *WebRTC Camera with Microphone*. Point it at your go2rtc server.
+   *WebRTC Camera with Microphone*.
 
-### YAML (recommended when go2rtc is not reachable yet)
+That is all - **no URL to type**. The integration auto-detects your go2rtc
+server by probing the well-known locations (the URL configured in the
+official *go2rtc* integration, the HA-managed go2rtc port, `localhost`,
+the docker host gateway, the Frigate add-on hostnames and the LAN address
+of your HA host) and uses the first one that answers.
 
-The card JavaScript is only served once the integration is set up. The config
-flow refuses to create an entry while go2rtc is unreachable, which leaves a
-fresh install with a *Custom element not found* card. Declaring a
-`CONFIG_SCHEMA` lets you set it up from YAML instead:
+### YAML (optional, only if auto-detection picks the wrong server)
 
 ```yaml
 webrtc_mic:
   url: http://192.168.1.10:1984/
 ```
 
-Restart Home Assistant. The card is then available even if go2rtc is not
-reachable yet - the config entry can be added later.
+Restart Home Assistant. Leave this out in the normal case - it is not
+required.
+
+### If go2rtc is not reachable at all
+
+The integration still sets up and serves the card, so you get a working
+dashboard instead of a *Custom element not found* card. The stream itself
+starts working as soon as go2rtc becomes reachable; add the integration
+from the UI afterwards to point it at a specific server.
 
 ### Manual
 
@@ -66,7 +74,8 @@ This means the browser could not load the card JavaScript. Check in order:
 1. **Is the integration set up?** The card JS is served from `async_setup`,
    which only runs once the integration is set up (via YAML or a config
    entry). Check *Settings → Devices & Services* for *WebRTC Camera with
-   Microphone*, or add the YAML block above.
+   Microphone*. Adding the integration from the UI is enough - it no longer
+   needs a working go2rtc URL.
 2. **Is the Lovelace resource registered?** In *Settings → System → Dashboards
    → Resources* there must be an entry for `/webrtc_mic/webrtc-mic-camera.js`.
    The integration adds it automatically in storage mode. If you manage
