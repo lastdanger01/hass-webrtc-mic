@@ -44,19 +44,22 @@ in place - that is all the microphone feature needs. See `patch/README.md`.
 
 1. Install the upstream [WebRTC Custom Integration](https://github.com/AlexxIT/hassio_webrtc)
    (HACS -> WebRTC Custom Integration).
-2. Download `patch/webrtc-mic-patch.zip` from the releases.
-3. On the HA host, in `config/custom_components/webrtc/www/`:
+2. On the HA host, run **one command**:
 
    ```bash
-   cd /tmp && unzip webrtc-mic-patch.zip && cd webrtc-mic-patch
-   cd /config/custom_components/webrtc/www/
-   python3 /tmp/webrtc-mic-patch/apply_patch.py \
-       /tmp/webrtc-mic-patch/video-rtc.js.patch video-rtc.js \
-       /tmp/webrtc-mic-patch/webrtc-camera.js.patch webrtc-camera.js
+   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.6/patch/install.sh | sudo bash
    ```
 
-4. Restart HA, then delete the *WebRTC Camera* Lovelace resource and
+   It finds the integration directory, downloads the patches, applies them,
+   verifies the result and prints the next steps. If the patch does not
+   match your upstream version, it changes **nothing**.
+
+3. Restart HA, then delete the *WebRTC Camera* Lovelace resource and
    reload the browser (the card is cached hard).
+
+Prefer to do it by hand? Download `patch/webrtc-mic-patch.zip` from the
+releases - it contains `apply_patch.py`, the patches for both common
+upstream versions (v3.6.1 and master) and the full instructions.
 
 Your card uses the **upstream** element name:
 
