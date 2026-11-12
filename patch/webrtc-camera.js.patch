@@ -1,0 +1,66 @@
+--- webrtc-camera.js.orig
++++ webrtc-camera.js
+@@ -483,6 +483,13 @@
+                 .volume {
+                     display: none;
+                 }
++                .microphone {
++                    display: none;
++                    color: #ff5252;
++                }
++                .microphone.active {
++                    color: #00c853;
++                }
+                 .stream {
+                     padding-top: 2px;
+                     margin-left: 2px;
+@@ -503,7 +510,8 @@
+                     <ha-icon class="pictureinpicture" icon="mdi:picture-in-picture-bottom-right"></ha-icon>
+                     <span class="stream">${this.streamName}</span>
+                     <span class="space"></span>
+-                    <ha-icon class="play" icon="mdi:play"></ha-icon>
++                    <ha-icon class="microphone" icon="mdi:microphone-off"></ha-icon>
++                <ha-icon class="play" icon="mdi:play"></ha-icon>
+                     <ha-icon class="volume" icon="mdi:volume-high"></ha-icon>
+                 </div>
+             </div>
+@@ -547,6 +555,18 @@
+         }
+ 
+         const ui = this.querySelector('.ui');
++        const mic = this.querySelector('.microphone');
++        if (this.config.microphone !== false) {
++            mic.style.display = 'block';
++        }
++
++        // The browser blocks autoplay with sound and silently mutes the video
++        // element. Any user gesture on the card is a chance to restore sound.
++        this.addEventListener('click', () => {
++            if (this.unmuteAutoplay()) {
++                this.querySelector('.volume').icon = this.video.muted ? 'mdi:volume-mute' : 'mdi:volume-high';
++            }
++        });
+         ui.addEventListener('click', ev => {
+             const icon = ev.target.icon;
+             if (icon === 'mdi:play') {
+@@ -565,6 +585,20 @@
+                 video.requestPictureInPicture().catch(console.warn);
+             } else if (icon === 'mdi:rectangle') {
+                 document.exitPictureInPicture().catch(console.warn);
++            } else if (icon === 'mdi:microphone-off') {
++                mic.icon = 'mdi:microphone';
++                mic.classList.add('active');
++                // a click is a user gesture: restore sound blocked by autoplay policy
++                this.unmuteAutoplay();
++                this.enableMicrophone().catch(err => {
++                    console.warn(err);
++                    mic.icon = 'mdi:microphone-off';
++                    mic.classList.remove('active');
++                });
++            } else if (icon === 'mdi:microphone') {
++                this.disableMicrophone().catch(console.warn);
++                mic.classList.remove('active');
++                mic.icon = 'mdi:microphone-off';
+             } else if (ev.target.className === 'stream') {
+                 this.nextStream(true);
+                 ev.target.innerText = this.streamName;

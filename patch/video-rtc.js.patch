@@ -1,0 +1,148 @@
+--- video-rtc.js.orig
++++ video-rtc.js
+@@ -140,6 +140,74 @@
+          * @type {Object.<string,Function>}
+          */
+         this.onmessage = null;
++
++        /**
++         * [info] Browser microphone stream (kept across reconnects).
++         * @type {MediaStream|null}
++         */
++        this.micStream = null;
++
++        /**
++         * [info] Browser microphone track used for the camera backchannel.
++         * @type {MediaStreamTrack|null}
++         */
++        this.micTrack = null;
++
++        /**
++         * [info] Microphone enabled state.
++         * @type {boolean}
++         */
++        this.micEnabled = false;
++
++        /**
++         * [info] True when the browser blocked autoplay with sound and we
++         * muted the element ourselves. A user gesture can undo this.
++         * @type {boolean}
++         */
++        this.autoMuted = false;
++    }
++
++    /**
++     * Prefer PCMA/8000 for the microphone. Tapo cameras only accept PCMA on
++     * the backchannel and go2rtc has no Opus decoder for it.
++     * @param transceiver {RTCRtpTransceiver}
++     */
++    setPCMACodecPreference(transceiver) {
++        try {
++            const caps = RTCRtpSender.getCapabilities('audio');
++            if (!caps) return;
++            const pcma = caps.codecs.filter(c => /PCMA/i.test(c.mimeType));
++            if (pcma.length) transceiver.setCodecPreferences(pcma);
++        } catch (e) {
++            console.warn(e);
++        }
++    }
++
++    /**
++     * Request microphone permission and renegotiate the peer connection so the
++     * sendonly audio transceiver reaches the camera backchannel.
++     * @return {Promise<void>}
++     */
++    async enableMicrophone() {
++        if (!this.micTrack) {
++            const media = await navigator.mediaDevices.getUserMedia({audio: true});
++            this.micStream = media;
++            this.micTrack = media.getAudioTracks()[0];
++        }
++        this.micTrack.enabled = true;
++        this.micEnabled = true;
++        if (!this.media.includes('microphone')) this.media += ',microphone';
++        this.ondisconnect();
++        setTimeout(() => this.onconnect(), 100);
++    }
++
++    /**
++     * Mute the microphone without dropping the peer connection.
++     * @return {Promise<void>}
++     */
++    async disableMicrophone() {
++        this.micEnabled = false;
++        if (this.micTrack) this.micTrack.enabled = false;
+     }
+ 
+     /**
+@@ -164,17 +232,40 @@
+      * https://developer.chrome.com/blog/autoplay/
+      */
+     play() {
+-        this.video.play().catch(() => {
+-            if (!this.video.muted) {
++        this.video.play().catch(er => {
++            // Only a real autoplay block (NotAllowedError) justifies muting.
++            // AbortError just means a new load/pause interrupted the request -
++            // muting there silences the camera audio for no reason.
++            if (er && er.name === 'NotAllowedError' && !this.video.muted) {
++                // Autoplay with sound was blocked by the browser. Remember that
++                // we muted it ourselves so a later user gesture can restore it.
++                this.autoMuted = true;
+                 this.video.muted = true;
+-                this.video.play().catch(er => {
+-                    console.warn(er);
++                this.video.play().catch(e2 => {
++                    console.warn(e2);
+                 });
+             }
+         });
+     }
+ 
+     /**
++     * Restore sound after the browser auto-muted the element because autoplay
++     * with audio was blocked. Must be called from a user gesture handler.
++     * @return {boolean} true if the sound was restored
++     */
++    unmuteAutoplay() {
++        if (!this.video || !this.autoMuted) return false;
++        this.autoMuted = false;
++        this.video.muted = false;
++        this.video.play().catch(() => {
++            // still blocked - fall back to muted again
++            this.autoMuted = true;
++            this.video.muted = true;
++        });
++        return true;
++    }
++
++    /**
+      * Send message to server via WebSocket
+      * @param {Object} value
+      */
+@@ -317,7 +408,7 @@
+         this.pcState = WebSocket.CLOSED;
+         if (this.pc) {
+             this.pc.getSenders().forEach(sender => {
+-                if (sender.track) sender.track.stop();
++                if (sender.track && sender.track !== this.micTrack) sender.track.stop();
+             });
+             this.pc.close();
+             this.pc = null;
+@@ -549,11 +640,11 @@
+      */
+     async createOffer(pc) {
+         try {
+-            if (this.media.includes('microphone')) {
+-                const media = await navigator.mediaDevices.getUserMedia({audio: true});
+-                media.getTracks().forEach(track => {
+-                    pc.addTransceiver(track, {direction: 'sendonly'});
+-                });
++            if (this.media.includes('microphone') && this.micTrack) {
++                const track = this.micTrack;
++                track.enabled = this.micEnabled;
++                const transceiver = pc.addTransceiver(track, {direction: 'sendonly'});
++                this.setPCMACodecPreference(transceiver);
+             }
+         } catch (e) {
+             console.warn(e);

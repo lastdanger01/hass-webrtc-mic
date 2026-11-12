@@ -24,7 +24,53 @@ the implementation has gaps. This fork fixes:
 | `microphone: false` config option | Lets you hide the button entirely |
 | Media player with progress bar, volume, seek, pause/resume | Upstream ships a minimal media player |
 
-## Installation
+## Two ways to install
+
+| | Simpler | Full fork |
+|---|---|---|
+| What changes | **2 JS files** (patched in place) | 7 files, new integration domain |
+| Card element | `custom:webrtc-camera` (upstream) | `custom:webrtc-mic-camera` |
+| Side by side with upstream | not possible (same files) | yes |
+| Files | `patch/` in this repo | HACS install of `webrtc_mic` |
+
+**Most people want the simple one.** It patches the two upstream JS files
+in place - that is all the microphone feature needs. See `patch/README.md`.
+
+> The only reason this repo is a separate integration is to run **alongside**
+> the upstream `webrtc` integration without conflicting domains and routes.
+> If you do not need both, use the patch.
+
+### Simple path (recommended)
+
+1. Install the upstream [WebRTC Custom Integration](https://github.com/AlexxIT/hassio_webrtc)
+   (HACS -> WebRTC Custom Integration).
+2. Download `patch/webrtc-mic-patch.zip` from the releases.
+3. On the HA host, in `config/custom_components/webrtc/www/`:
+
+   ```bash
+   cd /tmp && unzip webrtc-mic-patch.zip && cd webrtc-mic-patch
+   cd /config/custom_components/webrtc/www/
+   python3 /tmp/webrtc-mic-patch/apply_patch.py \
+       /tmp/webrtc-mic-patch/video-rtc.js.patch video-rtc.js \
+       /tmp/webrtc-mic-patch/webrtc-camera.js.patch webrtc-camera.js
+   ```
+
+4. Restart HA, then delete the *WebRTC Camera* Lovelace resource and
+   reload the browser (the card is cached hard).
+
+Your card uses the **upstream** element name:
+
+```yaml
+type: custom:webrtc-camera
+url: tapo44
+media: video,audio,microphone
+ui: true
+```
+
+> Use `url:`, not `entity:`. The upstream integration only accepts a real
+> camera entity_id in `entity:`; `url:` takes a go2rtc stream name directly.
+
+## Installation (full fork)
 
 ### HACS (recommended)
 
