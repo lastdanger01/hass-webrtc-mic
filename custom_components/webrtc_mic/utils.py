@@ -282,6 +282,35 @@ async def detect_go2rtc(hass: HomeAssistant) -> Optional[str]:
     return None
 
 
+async def check_go2rtc_stream(
+    hass: HomeAssistant, name: str, session=None
+) -> Optional[str]:
+    """Check whether `name` is a known go2rtc stream.
+
+    Users often write `entity: tapo44` where `tapo44` is the *go2rtc
+    stream name* and not a Home Assistant camera entity_id. This helper
+    lets the integration recognise that case instead of failing with
+    "Camera not found".
+    """
+    if not name:
+        return None
+
+    try:
+        if session is None:
+            session = async_get_clientsession(hass)
+        r = await session.get(api_streams(hass), timeout=3)
+        if r.status >= 400:
+            return None
+        streams = await r.json()
+    except Exception:
+        return None
+
+    if isinstance(streams, dict) and name in streams:
+        return name
+
+    return None
+
+
 async def check_go2rtc(hass: HomeAssistant, url: str = DEFAULT_URL) -> Optional[str]:
     session = async_get_clientsession(hass)
     try:

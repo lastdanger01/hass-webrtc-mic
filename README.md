@@ -107,6 +107,30 @@ media: video,audio,microphone
 
 Without `microphone` in `media`, the microphone button will not do anything.
 
+### `entity` vs `url`
+
+`entity` accepts a Home Assistant camera entity_id:
+
+```yaml
+type: custom:webrtc-mic-camera
+entity: camera.your_camera
+```
+
+It also accepts a **go2rtc stream name** - the integration looks the name
+up in the go2rtc stream list, so this works too:
+
+```yaml
+type: custom:webrtc-mic-camera
+entity: tapo44
+```
+
+If the value is neither, use `url` with the stream name or a full RTSP URL:
+
+```yaml
+type: custom:webrtc-mic-camera
+url: tapo44
+```
+
 To hide the button:
 
 ```yaml

@@ -198,12 +198,27 @@ async def ws_connect(hass: HomeAssistant, params: dict) -> str:
         server = "http://localhost:1984/"
 
     if entity_id := params.get("entity"):
-        src = await async_get_stream_source(hass, entity_id)
+        src = None
+        try:
+            src = await async_get_stream_source(hass, entity_id)
+        except Exception:
+            # Not a camera entity. Users often put a go2rtc *stream name*
+            # here (e.g. "tapo44"). Accept that as well instead of
+            # failing with "Camera not found".
+            src = None
+
         if src is None:
             # build link to MJPEG stream
             if state := hass.states.get(entity_id):
                 if token := state.attributes.get("access_token"):
                     src = f"{get_url(hass)}/api/camera_proxy_stream/{entity_id}?token={token}"
+
+        if src is None:
+            # go2rtc stream name fallback
+            stream = await utils.check_go2rtc_stream(hass, entity_id)
+            if stream:
+                src = stream
+
         assert src, f"Can't get URL for {entity_id}"
         query = {"src": src, "name": entity_id}
     elif src := params.get("url"):
