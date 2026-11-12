@@ -1,5 +1,5 @@
 /** Chrome 63+, Safari 11.1+ */
-import {VideoRTC} from './video-rtc.js?v=1.9.13-mic2';
+import {VideoRTC} from './video-rtc.js?v=1.9.14-mic3';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 
 class WebRTCCamera extends VideoRTC {
@@ -64,6 +64,14 @@ class WebRTCCamera extends VideoRTC {
         this.config = Object.assign({
             mode: config.mse === false ? 'webrtc' : config.webrtc === false ? 'mse' : this.mode,
             media: this.media,
+            // The control bar holds the microphone button, and renderCustomUI()
+            // starts with `if (!this.config.ui) return;` - without `ui: true`
+            // the whole bar (and with it the microphone) is never created.
+            // Default it on so the microphone exists without any card
+            // configuration. An explicit `ui:` in the card still wins,
+            // because Object.assign copies the card config over these
+            // defaults.
+            ui: true,
             streams: [{url: config.url, entity: config.entity}],
             poster_remote: config.poster && (config.poster.indexOf('://') > 0 || config.poster.charAt(0) === '/'),
         }, config);

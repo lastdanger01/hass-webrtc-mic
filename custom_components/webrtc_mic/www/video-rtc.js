@@ -197,6 +197,12 @@ export class VideoRTC extends HTMLElement {
         this.micTrack.enabled = true;
         this.micEnabled = true;
         if (!this.media.includes('microphone')) this.media += ',microphone';
+        // Keep config.media in sync as well. nextStream() resets
+        // `this.media` from `this.config.media`, so without this the
+        // microphone would be dropped again when the user switches streams.
+        if (!this.config.media || !this.config.media.includes('microphone')) {
+            this.config.media = this.media;
+        }
         this.ondisconnect();
         setTimeout(() => this.onconnect(), 100);
     }
