@@ -282,6 +282,23 @@ async def detect_go2rtc(hass: HomeAssistant) -> Optional[str]:
     return None
 
 
+async def list_go2rtc_streams(hass: HomeAssistant, session=None) -> list:
+    """Return the list of stream names known to the go2rtc server."""
+    try:
+        if session is None:
+            session = async_get_clientsession(hass)
+        r = await session.get(api_streams(hass), timeout=3)
+        if r.status >= 400:
+            return []
+        streams = await r.json()
+    except Exception:
+        return []
+
+    if isinstance(streams, dict):
+        return sorted(streams.keys())
+    return []
+
+
 async def check_go2rtc_stream(
     hass: HomeAssistant, name: str, session=None
 ) -> Optional[str]:
@@ -291,22 +308,31 @@ async def check_go2rtc_stream(
     stream name* and not a Home Assistant camera entity_id. This helper
     lets the integration recognise that case instead of failing with
     "Camera not found".
+
+    A `media_player.*` entity_id is also accepted: the upstream webrtc
+    integration creates one media_player per go2rtc stream, and the
+    entity registry knows the stream name it was created from.
     """
     if not name:
         return None
 
-    try:
-        if session is None:
-            session = async_get_clientsession(hass)
-        r = await session.get(api_streams(hass), timeout=3)
-        if r.status >= 400:
-            return None
-        streams = await r.json()
-    except Exception:
-        return None
+    stream_name = name
 
-    if isinstance(streams, dict) and name in streams:
-        return name
+    # media_player entity_id -> the go2rtc stream name it was created from
+    if name.startswith("media_player."):
+        try:
+            from homeassistant.helpers import entity_registry as er
+
+            entry = er.async_get(hass).async_get(name)
+            if entry and entry.unique_id:
+                stream_name = entry.unique_id
+        except Exception:
+            pass
+
+    streams = await list_go2rtc_streams(hass, session=session)
+
+    if stream_name in streams:
+        return stream_name
 
     return None
 

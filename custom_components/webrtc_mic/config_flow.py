@@ -43,12 +43,24 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
                         title="WebRTC Camera", data={CONF_URL: detected}
                     )
 
-                # nothing found: fall back to the go2rtc.yaml wizard
-                config = self.hass.config.path("go2rtc.yaml")
-                if not os.path.isfile(config):
-                    return await self.async_step_config(None)
+                # nothing found: ask whether to run a bundled go2rtc
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=vol.Schema(
+                        {
+                            vol.Optional(CONF_URL, default=""): cv.string,
+                            vol.Optional("bundled_go2rtc", default=False): bool,
+                        }
+                    ),
+                    errors={"base": "connect"},
+                    description_placeholders=USER_PLACEHOLDERS,
+                )
 
-                return self.async_create_entry(title="WebRTC Camera", data={})
+            if user_input.get("bundled_go2rtc"):
+                return self.async_create_entry(
+                    title="WebRTC Camera",
+                    data={"bundled_go2rtc": True},
+                )
 
             # check if go2rtc url from user input available
             if not await utils.check_go2rtc(self.hass, url):
@@ -81,6 +93,7 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Optional(CONF_URL, default=url): cv.string,
+                    vol.Optional("bundled_go2rtc", default=False): bool,
                 }
             ),
             description_placeholders=USER_PLACEHOLDERS,

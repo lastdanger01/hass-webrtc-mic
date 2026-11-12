@@ -40,6 +40,19 @@ official *go2rtc* integration, the HA-managed go2rtc port, `localhost`,
 the docker host gateway, the Frigate add-on hostnames and the LAN address
 of your HA host) and uses the first one that answers.
 
+If auto-detection cannot find your go2rtc (for example it runs on a
+different machine than Home Assistant), set it explicitly:
+
+```yaml
+webrtc_mic:
+  url: http://<go2rtc-host>:1984/
+```
+
+The integration will **not** silently start its own bundled go2rtc - a
+bundled instance has no streams configured, so every camera card would
+fail with *"Can't get URL for ..."*. If you really want it, tick
+*Use a bundled go2rtc* when adding the integration.
+
 ### YAML (optional, only if auto-detection picks the wrong server)
 
 ```yaml

@@ -166,7 +166,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         hass.data[DOMAIN] = go_url
         return True
 
-    # 3. Serve go2rtc binary manually
+    # 3. Serve go2rtc binary manually.
+    #
+    # This is a last resort: a bundled go2rtc has NO streams configured, so
+    # every camera card would fail with "Can't get URL for ...". Only use
+    # it when the user explicitly asked for it (the bundled binary has
+    # streams of its own in some setups) - otherwise fail loudly with a
+    # message that tells the user what to configure.
+    if not entry.data.get("bundled_go2rtc"):
+        _LOGGER.error(
+            "Could not find a go2rtc server. Set the go2rtc URL in "
+            "configuration.yaml (webrtc_mic: url: http://<host>:1984/) or "
+            "add the integration again and enter the URL."
+        )
+        return False
+
     binary = await hass.async_add_executor_job(utils.validate_binary, hass)
     if not binary:
         return False
@@ -219,7 +233,32 @@ async def ws_connect(hass: HomeAssistant, params: dict) -> str:
             if stream:
                 src = stream
 
-        assert src, f"Can't get URL for {entity_id}"
+        if src is None:
+            # Give the user something actionable instead of a bare assert.
+            streams = await utils.list_go2rtc_streams(hass)
+            go_url = hass.data.get(DOMAIN)
+            if isinstance(go_url, Server):
+                # the integration started its own bundled go2rtc, which has
+                # no streams configured at all
+                raise Exception(
+                    f"Can't get URL for {entity_id}. The integration is running "
+                    f"its own bundled go2rtc (no streams configured). Point the "
+                    f"integration at your real go2rtc server - set "
+                    f"`webrtc_mic: url: http://<go2rtc>:1984/` in "
+                    f"configuration.yaml, or use the URL of a camera entity."
+                )
+            if streams:
+                raise Exception(
+                    f"Can't get URL for {entity_id}. Available go2rtc streams: "
+                    f"{', '.join(streams)}. Use one of them as `entity`, or use "
+                    f"`url:` instead."
+                )
+            raise Exception(
+                f"Can't get URL for {entity_id}. The go2rtc server at {go_url} "
+                f"returned no streams. Check that the go2rtc URL is correct and "
+                f"reachable from Home Assistant."
+            )
+
         query = {"src": src, "name": entity_id}
     elif src := params.get("url"):
         if "{{" in src or "{%" in src:
