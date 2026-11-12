@@ -14,6 +14,11 @@ set -u
 
 BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.8/patch"
 
+# raw.githubusercontent.com caches by URL, and a force-pushed tag can still
+# serve the old file for a while. A dummy query string busts that cache
+# while the path still resolves.
+CACHE_BUST="?v=$(date +%s)"
+
 echo "=============================================="
 echo " WebRTC 麥克風對講補丁 - 安裝"
 echo "=============================================="
@@ -85,7 +90,7 @@ fi
 for f in video-rtc.js.patch video-rtc.js.v361.patch video-rtc.js.v360.patch \
          webrtc-camera.js.patch webrtc-camera.js.v361.patch webrtc-camera.js.v360.patch \
          apply_patch.py; do
-  if ! fetch "$BASE_URL/$f" "$WORK/$f"; then
+  if ! fetch "$BASE_URL/$f$CACHE_BUST" "$WORK/$f"; then
     echo "    [錯誤] 下載 $f 失敗"
     exit 1
   fi
