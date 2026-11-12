@@ -68,12 +68,17 @@ patch -p0 < /path/to/webrtc-camera.js.patch
 
 | 項目 | 值 |
 |---|---|
-| 整合版本 | v3.6.1（tag）與上游 master |
-| 補丁基準的 video-rtc.js | 上游 master（1.9.12） |
-| 補丁基準的 webrtc-camera.js | 上游 master（3.6.1） |
-| 套用後的 query 版本 | `video-rtc.js?v=1.9.12` / `webrtc-camera.js?v=v3.6.1` |
+補丁支援三個上游版本，各自有一份對應的 patch：
 
-> 2026-11-12 重新產生：上游 master 已把 `indexOf` 改成 `includes`，舊補丁套不上去（hunk 4/4 失敗）。新補丁已對 **v3.6.1 tag 與 master** 實測套用成功。
+| 上游版本 | 補丁檔 | 實測 hunk |
+|---|---|---|
+| master | `video-rtc.js.patch` / `webrtc-camera.js.patch` | 4/4 + 4/4 |
+| v3.6.1（tag） | `*.v361.patch` | 10/10 + 8/8 |
+| v3.6.0（tag） | `*.v360.patch` | 12/12 + 8/8 |
+
+`install.sh` 會依序嘗試並自動挑選套用成功的那一份；三個都不符就**完全不動檔案**。
+
+> 2026-11-12 重新產生：上游 master 已把 `indexOf` 改成 `includes`，舊補丁套不上去（hunk 4/4 失敗）。之後又補上 v3.6.1 與 v3.6.0 兩個 release tag 的版本 —— **HACS addon 裝的是 release tag，不是 master**，只有 master 版補丁會失敗。
 
 **如果對方的上游版本跟這裡不同**，`patch` 會失敗（hunk 不匹配）。那時要把 `video-rtc.js` / `webrtc-camera.js` 換成這個資料夾裡的 `.orig` 基準版本再套 —— 但那會把對方自己的修改洗掉，所以**先 diff 一下看看對方有沒有改過**。
 

@@ -2,7 +2,7 @@
 # 一鍵安裝 WebRTC 麥克風對講補丁（patch 上游 webrtc 整合的兩個 JS）
 #
 # 用法（在 HA 主機上執行）：
-#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.6/patch/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.7/patch/install.sh | sudo bash
 #
 # 它會自動：
 #   1. 找到上游 webrtc 整合的 www 目錄
@@ -12,7 +12,7 @@
 #   5. 提示接下來要做什麼
 set -u
 
-BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.6/patch"
+BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.7/patch"
 
 echo "=============================================="
 echo " WebRTC 麥克風對講補丁 - 安裝"
@@ -82,8 +82,9 @@ else
   exit 1
 fi
 
-for f in video-rtc.js.patch video-rtc.js.v361.patch \
-         webrtc-camera.js.patch webrtc-camera.js.v361.patch apply_patch.py; do
+for f in video-rtc.js.patch video-rtc.js.v361.patch video-rtc.js.v360.patch \
+         webrtc-camera.js.patch webrtc-camera.js.v361.patch webrtc-camera.js.v360.patch \
+         apply_patch.py; do
   if ! fetch "$BASE_URL/$f" "$WORK/$f"; then
     echo "    [錯誤] 下載 $f 失敗"
     exit 1
@@ -112,10 +113,10 @@ else
     exit 1
   fi
 
-  # 上游有兩個常見版本（v3.6.1 release 與 master），各有一份補丁。
+  # 上游有三個常見版本（master、v3.6.1 release、v3.6.0 release），各有一份補丁。
   # 逐一嘗試，全部 hunk 成功才算數；任一組失敗都不動檔案。
   APPLIED=0
-  for variant in "" ".v361"; do
+  for variant in "" ".v361" ".v360"; do
     echo "    嘗試補丁版本: ${variant:-master}"
     OUT=$($PY "$WORK/apply_patch.py" \
           "$WORK/video-rtc.js${variant}.patch" video-rtc.js \

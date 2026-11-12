@@ -220,21 +220,23 @@ def candidate_urls(hass: HomeAssistant) -> list:
         if url not in out:
             out.append(url)
 
-    # 1. URL configured in the official go2rtc integration
+    # 1. URL configured in the official go2rtc integration. Only trust it
+    #    if the user actually pointed it at their own server - the HA
+    #    managed instance stores the HA_MANAGED_URL there, and that one
+    #    never has any cameras.
     try:
         for entry in hass.config_entries.async_entries("go2rtc"):
-            add(entry.data.get(CONF_URL))
+            url = entry.data.get(CONF_URL)
+            if url and "11984" not in url:
+                add(url)
     except Exception:
         pass
 
-    # 2. go2rtc managed by HA itself (unix socket + internal API port)
-    add("http://localhost:11984/")
-
-    # 3. go2rtc on the same host / in the same container
+    # 2. go2rtc on the same host / in the same container
     add(DEFAULT_URL)
     add("http://127.0.0.1:1984/")
 
-    # 4. docker host gateway (go2rtc in another container)
+    # 3. docker host gateway (go2rtc in another container)
     add("http://host.docker.internal:1984/")
 
     # 5. go2rtc bundled in the Frigate add-on (closed public port)
@@ -255,11 +257,30 @@ def candidate_urls(hass: HomeAssistant) -> list:
         if host:
             add(f"http://{host}:1984/")
 
+    # 7. go2rtc managed by HA itself (unix socket + internal API port).
+    #    Absolute last resort - it answers HTTP but never has any
+    #    streams of its own, so picking it breaks every camera card.
+    add("http://localhost:11984/")
+
     return out
 
 
 async def detect_go2rtc(hass: HomeAssistant) -> Optional[str]:
-    """Probe all known go2rtc locations and return the first that answers."""
+    """Probe all known go2rtc locations and return the best one.
+
+    A candidate only counts if it answers AND actually exposes a stream
+    list. This matters because several plausible URLs answer while being
+    useless:
+
+    - the HA-managed go2rtc (``localhost:11984``) answers but has no
+      streams at all - it is HA's own empty instance
+    - the official *go2rtc* integration may point at an instance without
+      the user's cameras
+
+    Preferring such a URL is what makes every camera card fail with
+    "Can't get URL for ...". So we check the stream list, not just the
+    HTTP status, and we prefer candidates that actually have streams.
+    """
     candidates = candidate_urls(hass)
     if not candidates:
         return None
@@ -267,16 +288,29 @@ async def detect_go2rtc(hass: HomeAssistant) -> Optional[str]:
     session = async_get_clientsession(hass)
 
     async def probe(url: str):
+        """Return (url, stream_count) - stream_count is -1 if unreachable."""
         try:
-            r = await session.head(url, timeout=2, allow_redirects=True)
-            return url if r.status < 400 else None
+            r = await session.get(urljoin(url, "api/streams"), timeout=3)
+            if r.status >= 400:
+                return url, 0
+            data = await r.json()
+            if isinstance(data, dict):
+                return url, len(data)
+            return url, 0
         except Exception:
-            return None
+            return url, -1
 
     results = await asyncio.gather(*(probe(url) for url in candidates))
 
-    for url, ok in zip(candidates, results):
-        if ok:
+    # First candidate that answers and has at least one stream.
+    for url, (_url, count) in zip(candidates, results):
+        if count > 0:
+            return url
+
+    # Nothing had streams. Fall back to any candidate that at least
+    # answered, so the user can still see a useful error message.
+    for url, (_url, count) in zip(candidates, results):
+        if count >= 0:
             return url
 
     return None

@@ -47,7 +47,7 @@ in place - that is all the microphone feature needs. See `patch/README.md`.
 2. On the HA host, run **one command**:
 
    ```bash
-   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.6/patch/install.sh | sudo bash
+   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.7/patch/install.sh | sudo bash
    ```
 
    It finds the integration directory, downloads the patches, applies them,
