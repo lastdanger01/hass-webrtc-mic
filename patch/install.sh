@@ -114,6 +114,7 @@ fi
 
 for f in video-rtc.js.patch video-rtc.js.v361.patch video-rtc.js.v360.patch \
          webrtc-camera.js.patch webrtc-camera.js.v361.patch webrtc-camera.js.v360.patch \
+         video-rtc.js.racefix.patch \
          apply_patch.py; do
   if ! fetch "$BASE_URL/$f$CACHE_BUST" "$WORK/$f"; then
     echo "    [錯誤] 下載 $f 失敗"
@@ -129,8 +130,27 @@ echo
 
 # --- 3. 檢查是否已經套過 -------------------------------------------------
 if grep -q "mdi:microphone" "$WWW/webrtc-camera.js" 2>/dev/null; then
-  echo "[3] 偵測到補丁已經套過了，略過。"
-  echo
+  echo "[3] 偵測到麥克風按鈕已經存在。"
+  if grep -q "this.ws === ws" "$WWW/video-rtc.js" 2>/dev/null; then
+    echo "    競態修復也在，略過。"
+    echo
+  else
+    echo "    但缺少 v1.0.9 的競態修復，補上（麥克風按了沒聲音就是這個原因）..."
+    cd "$WWW" || exit 1
+    if command -v python3 >/dev/null 2>&1; then PY=python3
+    elif command -v python >/dev/null 2>&1; then PY=python
+    else echo "    [錯誤] 需要 python3"; exit 1; fi
+    OUT=$($PY "$WORK/apply_patch.py" "$WORK/video-rtc.js.racefix.patch" video-rtc.js 2>&1)
+    RC=$?
+    echo "$OUT" | sed 's/^/      /'
+    if [ $RC -eq 0 ]; then
+      echo "    OK  競態修復已補上"
+    else
+      echo "    [錯誤] 競態修復套用失敗，檔案未被修改。"
+      exit 1
+    fi
+    echo
+  fi
 else
   echo "[3] 套用補丁..."
   cd "$WWW" || exit 1
