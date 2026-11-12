@@ -1,0 +1,87 @@
+--- __init__.py
++++ __init__.py
+@@ -149,6 +149,49 @@
+     return True
+ 
+ 
++async def _go2rtc_stream_names(hass: HomeAssistant) -> list:
++    """Return the go2rtc stream names known to the configured server."""
++    try:
++        session = async_get_clientsession(hass)
++        async with session.get(utils.api_streams(hass), timeout=5) as r:
++            if r.status != 200:
++                return []
++            data = await r.json()
++        if isinstance(data, dict):
++            return sorted(data.keys())
++        return []
++    except Exception:
++        return []
++
++
++async def _go2rtc_stream_src(hass: HomeAssistant, name: str) -> str | None:
++    """Resolve a go2rtc stream name to a source URL.
++
++    Users often write `entity: tapo44` where `tapo44` is the go2rtc stream
++    name and not a Home Assistant camera entity_id.
++    """
++    if not name:
++        return None
++
++    stream_name = name
++
++    # media_player entity_id -> the go2rtc stream name it was created from
++    if name.startswith("media_player."):
++        try:
++            from homeassistant.helpers import entity_registry as er
++
++            entry = er.async_get(hass).async_get(name)
++            if entry and entry.unique_id:
++                stream_name = entry.unique_id
++        except Exception:
++            pass
++
++    if stream_name in await _go2rtc_stream_names(hass):
++        return stream_name
++
++    return None
++
++
+ async def ws_connect(hass: HomeAssistant, params: dict) -> str:
+     # 1. Server URL from card param
+     server: str = params.get("server")
+@@ -161,13 +204,32 @@
+         server = "http://localhost:1984/"
+ 
+     if entity_id := params.get("entity"):
+-        src = await async_get_stream_source(hass, entity_id)
++        src = None
++        try:
++            src = await async_get_stream_source(hass, entity_id)
++        except Exception:
++            # Not a camera entity. Users often put a go2rtc *stream name*
++            # here (e.g. "tapo44"). Accept that as well instead of failing
++            # with "Camera not found".
++            src = None
++
+         if src is None:
+             # build link to MJPEG stream
+             if state := hass.states.get(entity_id):
+                 if token := state.attributes.get("access_token"):
+                     src = f"{get_url(hass)}/api/camera_proxy_stream/{entity_id}?token={token}"
+-        assert src, f"Can't get URL for {entity_id}"
++
++        if src is None:
++            # go2rtc stream name fallback
++            src = await _go2rtc_stream_src(hass, entity_id)
++
++        if src is None:
++            streams = await _go2rtc_stream_names(hass)
++            raise Exception(
++                f"Can't get URL for {entity_id}. "
++                f"Available go2rtc streams: {streams or 'none'}. "
++                f"Put the stream name in the card's `url:` option."
++            )
+         query = {"src": src, "name": entity_id}
+     elif src := params.get("url"):
+         if "{{" in src or "{%" in src:

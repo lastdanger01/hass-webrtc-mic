@@ -1,0 +1,15 @@
+--- webrtc-camera.js
++++ webrtc-camera.js
+@@ -64,6 +64,12 @@
+         this.config = Object.assign({
+             mode: config.mse === false ? 'webrtc' : config.webrtc === false ? 'mse' : this.mode,
+             media: this.media,
++            // The control bar holds the microphone button, and upstream skips
++            // the whole bar unless the card sets `ui: true`. Default it on so
++            // the microphone exists without any card configuration. An
++            // explicit `ui:` in the card still wins, because Object.assign
++            // copies the card config over these defaults.
++            ui: true,
+             streams: [{url: config.url, entity: config.entity}],
+             poster_remote: config.poster && (config.poster.indexOf('://') > 0 || config.poster.charAt(0) === '/'),
+         }, config);

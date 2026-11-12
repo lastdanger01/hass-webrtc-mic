@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# 一鍵安裝 WebRTC 麥克風對講補丁（patch 上游 webrtc 整合的兩個 JS）
+# 一鍵安裝 WebRTC 麥克風對講（全自動）
 #
 # 用法（在 HA 主機上執行）：
-#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.9/patch/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.13/patch/install.sh | sudo bash
 #
 # 它會自動：
-#   1. 找到上游 webrtc 整合的 www 目錄
-#   2. 下載兩個補丁
-#   3. 套用（失敗會整組不動，並保留 .bak）
-#   4. 驗證結果
-#   5. 提示接下來要做什麼
+#   1. 找到上游 webrtc 整合目錄
+#   2. 下載轉換器（不依賴版本綁定的 diff patch）
+#   3. 套用麥克風對講改動（任何上游版本都適用）
+#   4. 移除過期的預壓縮 .gz 檔（否則瀏覽器拿到舊版）
+#   5. 把 manifest 版本改成 -micN（HA 重啟時會自動改寫 Lovelace 資源 URL）
+#   6. 驗證結果
+#   7. 重啟 Home Assistant
+#
+# 不需要手動改儀表板資源，也不需要在卡片加任何設定。
 set -u
 
 REPO="lastdanger01/hass-webrtc-mic"
@@ -21,14 +25,14 @@ REPO="lastdanger01/hass-webrtc-mic"
 #   (unset)                        -> use the latest release
 TAG="${TAG:-}"
 
+# Set to 0 to skip the Home Assistant restart at the end.
+RESTART_HA="${RESTART_HA:-1}"
+
 api_get() { curl -sSL "$1" 2>/dev/null; }
 
-# Files that must exist in the release before we touch anything.
-REQUIRED="video-rtc.js.patch video-rtc.js.v361.patch video-rtc.js.v360.patch
-          webrtc-camera.js.patch webrtc-camera.js.v361.patch webrtc-camera.js.v360.patch
-          video-rtc.js.racefix.patch apply_patch.py"
+REQUIRED="transform_webrtc.py"
 
-# 1. Which release?
+# --- 1. Which release? ----------------------------------------------------
 if [ -z "$TAG" ]; then
     TAG=$(api_get "https://api.github.com/repos/$REPO/releases/latest" \
           | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
@@ -40,12 +44,11 @@ fi
 if [ -z "$TAG" ]; then
     echo "[錯誤] 無法確定要安裝的版本（無法取得 release 資訊）。" >&2
     echo "       請改用指定版本：" >&2
-    echo "       TAG=v1.0.10 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.10/patch/install.sh | sudo bash" >&2
+    echo "       TAG=v1.0.13 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.13/patch/install.sh | sudo bash" >&2
     exit 1
 fi
 
-# 2. Resolve the tag to its commit SHA. raw.githubusercontent.com caches by
-#    URL, so we download from the immutable SHA instead of the tag.
+# --- 2. Resolve the tag to its commit SHA ----------------------------------
 resolve_sha() {
     sha=""
     if command -v git >/dev/null 2>&1; then
@@ -67,265 +70,240 @@ else
     BASE_URL="https://raw.githubusercontent.com/$REPO/$TAG/patch"
 fi
 
-# extra cache buster
 CACHE_BUST="?v=$(date +%s)"
 
 echo "=============================================="
-echo " WebRTC 麥克風對講補丁 - 安裝"
+echo " WebRTC 麥克風對講 - 全自動安裝"
 echo "=============================================="
+echo " 版本: $TAG"
 echo
 
-# --- 1. 找到 www 目錄 ---------------------------------------------------
-find_www() {
-  local cands="
-    /config/custom_components/webrtc/www
-    /homeassistant/custom_components/webrtc/www
-    /workspace/custom_components/webrtc/www
-  "
-  for d in $cands; do
-    if [ -f "$d/video-rtc.js" ] && [ -f "$d/webrtc-camera.js" ]; then
-      echo "$d"; return 0
+# --- 3. Find the integration directory -------------------------------------
+find_integration() {
+    local cands="
+    /config/custom_components/webrtc
+    /homeassistant/custom_components/webrtc
+    /workspace/custom_components/webrtc
+    "
+    for d in $cands; do
+        if [ -f "$d/www/webrtc-camera.js" ] && [ -f "$d/__init__.py" ]; then
+            echo "$d"; return 0
+        fi
+    done
+    # dynamic search
+    local found
+    found=$(find / -path /proc -prune -o -type f -name 'webrtc-camera.js' -print 2>/dev/null | head -1)
+    if [ -n "$found" ]; then
+        local dir
+        dir=$(dirname "$(dirname "$found")")
+        if [ -f "$dir/__init__.py" ]; then
+            echo "$dir"; return 0
+        fi
     fi
-  done
-  # 容器內（HA 官方 docker）的路徑
-  if [ -f /homeassistant/custom_components/webrtc/www/video-rtc.js ]; then
-    echo "/homeassistant/custom_components/webrtc/www"; return 0
-  fi
-  # 動態搜尋
-  local found
-  found=$(find / -path /proc -prune -o -type f -name 'webrtc-camera.js' -print 2>/dev/null | head -1)
-  if [ -n "$found" ]; then
-    echo "$(dirname "$found")"; return 0
-  fi
-  return 1
+    return 1
 }
 
-WWW="$(find_www)" || {
-  echo "[錯誤] 找不到上游 webrtc 整合的 www 目錄"
-  echo
-  echo "  你還沒裝上游整合。請先裝："
-  echo "    HACS -> 整合 -> WebRTC Custom Integration"
-  echo "  (https://github.com/AlexxIT/hassio_webrtc)"
-  echo
-  echo "  裝好之後再跑一次這個指令。"
-  exit 1
+INTEG="$(find_integration)" || {
+    echo "[錯誤] 找不到上游 webrtc 整合"
+    echo
+    echo "  你還沒裝上游整合。請先裝："
+    echo "    HACS -> 整合 -> WebRTC Custom Integration"
+    echo "  (https://github.com/AlexxIT/hassio_webrtc)"
+    echo
+    echo "  裝好之後再跑一次這個指令。"
+    exit 1
 }
+
+WWW="$INTEG/www"
 
 echo "[1] 找到整合目錄:"
-echo "    $WWW"
+echo "    $INTEG"
 echo
 
-# --- 2. 下載補丁 --------------------------------------------------------
+# --- 4. Download -----------------------------------------------------------
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-echo "[2] 下載補丁..."
+echo "[2] 下載轉換器..."
 if command -v curl >/dev/null 2>&1; then
-  DL="curl -sSL"
+    fetch() { curl -fsSL "$1" -o "$2"; }
 elif command -v wget >/dev/null 2>&1; then
-  DL="wget -q -O"
+    fetch() { wget -q -O "$2" "$1"; }
 else
-  echo "    [錯誤] 需要 curl 或 wget"
-  exit 1
+    echo "    [錯誤] 需要 curl 或 wget"
+    exit 1
 fi
 
-if command -v curl >/dev/null 2>&1; then
-  fetch() { curl -fsSL "$1" -o "$2"; }
-elif command -v wget >/dev/null 2>&1; then
-  fetch() { wget -q -O "$2" "$1"; }
-else
-  echo "    [錯誤] 需要 curl 或 wget"
-  exit 1
-fi
-
-# 先檢查所有必要檔案是否存在，一次列出所有缺檔（不要下載到一半才發現缺檔）
 MISSING=""
 for f in $REQUIRED; do
-  if ! fetch "$BASE_URL/$f$CACHE_BUST" "$WORK/$f" 2>/dev/null || [ ! -s "$WORK/$f" ]; then
-    MISSING="$MISSING $f"
-    rm -f "$WORK/$f"
-  fi
+    if ! fetch "$BASE_URL/$f$CACHE_BUST" "$WORK/$f" 2>/dev/null || [ ! -s "$WORK/$f" ]; then
+        MISSING="$MISSING $f"
+        rm -f "$WORK/$f"
+    fi
 done
 if [ -n "$MISSING" ]; then
-  echo "    [錯誤] 版本 $TAG 缺少下列檔案："
-  for f in $MISSING; do echo "       - $f"; done
-  echo
-  echo "       這代表安裝器跟 release 版本不一致。請用最新的安裝指令，或指定版本："
-  echo "       TAG=v1.0.10 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.10/patch/install.sh | sudo bash"
-  echo "       檔案沒有被修改。"
-  exit 1
+    echo "    [錯誤] 版本 $TAG 缺少下列檔案："
+    for f in $MISSING; do echo "       - $f"; done
+    echo
+    echo "       檔案沒有被修改。"
+    exit 1
 fi
 echo "    OK"
 echo
 
-# --- 3. 檢查是否已經套過 -------------------------------------------------
-if grep -q "mdi:microphone" "$WWW/webrtc-camera.js" 2>/dev/null; then
-  echo "[3] 偵測到麥克風按鈕已經存在。"
-  if grep -q "this.ws === ws" "$WWW/video-rtc.js" 2>/dev/null; then
-    echo "    競態修復也在，略過。"
-    echo
-  else
-    echo "    但缺少 v1.0.9 的競態修復，補上（麥克風按了沒聲音就是這個原因）..."
-    cd "$WWW" || exit 1
-    if command -v python3 >/dev/null 2>&1; then PY=python3
-    elif command -v python >/dev/null 2>&1; then PY=python
-    else echo "    [錯誤] 需要 python3"; exit 1; fi
-    OUT=$($PY "$WORK/apply_patch.py" "$WORK/video-rtc.js.racefix.patch" video-rtc.js 2>&1)
-    RC=$?
-    echo "$OUT" | sed 's/^/      /'
-    if [ $RC -eq 0 ]; then
-      echo "    OK  競態修復已補上"
-    else
-      echo "    [錯誤] 競態修復套用失敗，檔案未被修改。"
-      exit 1
-    fi
-    echo
-  fi
-else
-  echo "[3] 套用補丁..."
-  cd "$WWW" || exit 1
-  if command -v python3 >/dev/null 2>&1; then
-    PY=python3
-  elif command -v python >/dev/null 2>&1; then
-    PY=python
-  else
+# --- 5. Backup + apply -----------------------------------------------------
+echo "[3] 備份原始檔..."
+STAMP=$(date +%Y%m%d-%H%M%S)
+for f in "$WWW/video-rtc.js" "$WWW/webrtc-camera.js" "$INTEG/__init__.py" "$INTEG/manifest.json"; do
+    [ -f "$f" ] && cp -p "$f" "$f.bak-$STAMP"
+done
+echo "    OK (副檔名 .bak-$STAMP)"
+echo
+
+echo "[4] 套用麥克風對講改動..."
+PY=""
+for c in python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+done
+if [ -z "$PY" ]; then
     echo "    [錯誤] 需要 python3"
     exit 1
-  fi
-
-  # 上游有三個常見版本（master、v3.6.1 release、v3.6.0 release），各有一份補丁。
-  # 逐一嘗試，全部 hunk 成功才算數；任一組失敗都不動檔案。
-  APPLIED=0
-  for variant in "" ".v361" ".v360"; do
-    echo "    嘗試補丁版本: ${variant:-master}"
-    OUT=$($PY "$WORK/apply_patch.py" \
-          "$WORK/video-rtc.js${variant}.patch" video-rtc.js \
-          "$WORK/webrtc-camera.js${variant}.patch" webrtc-camera.js 2>&1)
-    RC=$?
-    echo "$OUT" | sed 's/^/      /'
-    if [ $RC -eq 0 ]; then
-      APPLIED=1
-      break
-    fi
-    echo "      （不匹配，換下一個版本）"
-  done
-
-  if [ $APPLIED -eq 0 ]; then
-    echo
-    echo "    [錯誤] 補丁套用失敗，檔案完全沒有被修改。"
-    echo "    可能是上游版本不同。請把上面的錯誤訊息回報給提供補丁的人。"
-    exit 1
-  fi
-  echo
 fi
 
-# --- 3.5 處理預壓縮檔 ---------------------------------------------------
-# 上游 WebRTC 整合的 www/ 裡可能帶著預先壓縮好的 .gz 檔（有些發行版會附）。
-# Caddy 看到瀏覽器送 Accept-Encoding: gzip 就會優先送 .gz，
-# 而那個 .gz 還是舊版內容 → patch 改了 .js 卻完全沒有生效。
-# 解壓縮後檢查內容，舊的就刪掉（讓伺服器直接送新的 .js）。
-echo "[4] 處理預壓縮檔 (.gz)..."
-STALE_GZ=""
-for gz in "$WWW"/*.gz; do
-  [ -f "$gz" ] || continue
-  base="${gz%.gz}"
-  if [ ! -f "$base" ]; then
-    continue
-  fi
-  # 解壓縮後比對：內容不同 → 這個 .gz 是舊版，必須移除
-  if command -v gzip >/dev/null 2>&1; then
-    inner=$(gzip -cd "$gz" 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)
-    cur=$(sha256sum "$base" 2>/dev/null | cut -d' ' -f1)
-    if [ -n "$inner" ] && [ -n "$cur" ] && [ "$inner" != "$cur" ]; then
-      STALE_GZ="$STALE_GZ $(basename "$gz")"
-    fi
-  fi
-done
-if [ -n "$STALE_GZ" ]; then
-  echo "    發現過期的預壓縮檔:$STALE_GZ"
-  echo "    這些 .gz 是舊版內容，瀏覽器會拿到它們而看不到剛剛的修改。"
-  for g in $STALE_GZ; do
-    rm -f "$WWW/$g" && echo "    已移除 $g"
-  done
-  echo "    （伺服器之後會直接提供新的 .js）"
-else
-  echo "    OK  沒有過期的預壓縮檔"
+if ! "$PY" "$WORK/transform_webrtc.py" "$INTEG"; then
+    echo
+    echo "    [錯誤] 套用失敗，檔案已還原。"
+    for f in "$WWW/video-rtc.js" "$WWW/webrtc-camera.js" "$INTEG/__init__.py" "$INTEG/manifest.json"; do
+        [ -f "$f.bak-$STAMP" ] && mv "$f.bak-$STAMP" "$f"
+    done
+    exit 1
 fi
 echo
 
-# --- 4. 驗證 ------------------------------------------------------------
-echo "[5] 驗證..."
+# --- 6. Stale pre-compressed .gz -------------------------------------------
+# The upstream integration can ship pre-compressed .gz siblings next to its
+# JS. Caddy prefers the .gz whenever the browser sends Accept-Encoding: gzip,
+# so patching the .js alone changes nothing the browser can see. Measured on
+# the external HA: the server returned the 2024 file while the .js on disk was
+# correct.
+echo "[5] 處理預壓縮檔 (.gz)..."
+STALE_GZ=""
+for gz in "$WWW"/*.gz; do
+    [ -f "$gz" ] || continue
+    base="${gz%.gz}"
+    [ -f "$base" ] || continue
+    if command -v gzip >/dev/null 2>&1; then
+        inner=$(gzip -cd "$gz" 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)
+        cur=$(sha256sum "$base" 2>/dev/null | cut -d' ' -f1)
+        if [ -n "$inner" ] && [ -n "$cur" ] && [ "$inner" != "$cur" ]; then
+            STALE_GZ="$STALE_GZ $(basename "$gz")"
+        fi
+    fi
+done
+if [ -n "$STALE_GZ" ]; then
+    echo "    發現過期的預壓縮檔:$STALE_GZ"
+    for g in $STALE_GZ; do
+        rm -f "$WWW/$g" && echo "    已移除 $g"
+    done
+    echo "    （伺服器之後會直接提供新的 .js）"
+else
+    echo "    OK  沒有過期的預壓縮檔"
+fi
+echo
+
+# --- 7. Verify -------------------------------------------------------------
+echo "[6] 驗證..."
 FAIL=0
 
-if grep -q "mdi:microphone" "$WWW/webrtc-camera.js" 2>/dev/null; then
-  echo "    OK  麥克風按鈕 UI"
-else
-  echo "    [X]  麥克風按鈕 UI 沒找到"; FAIL=1
-fi
+check() {
+    if grep -q "$2" "$3" 2>/dev/null; then
+        echo "    OK  $1"
+    else
+        echo "    [X]  $1"; FAIL=1
+    fi
+}
 
-if grep -q "PCMA" "$WWW/video-rtc.js" 2>/dev/null; then
-  echo "    OK  PCMA 編碼偏好"
-else
-  echo "    [X]  PCMA 編碼偏好 沒找到"; FAIL=1
-fi
+check "麥克風按鈕 UI"              "mdi:microphone"       "$WWW/webrtc-camera.js"
+check "控制列預設開啟 (ui: true)" "ui: true,"            "$WWW/webrtc-camera.js"
+check "PCMA 編碼偏好"             "PCMA"                 "$WWW/video-rtc.js"
+check "麥克風重連競態修復"         "this.ws === ws"       "$WWW/video-rtc.js"
+check "onopen null 防護"           "if (!this.ws) return;" "$WWW/video-rtc.js"
+check "自動播放靜音還原"           "unmuteAutoplay"       "$WWW/video-rtc.js"
+check "卡片元素名 (webrtc-camera)" "webrtc-camera"        "$WWW/webrtc-camera.js"
+check "WebSocket 路由"             "api/webrtc/ws"        "$WWW/webrtc-camera.js"
+check "entity: 支援 stream 名稱"   "_go2rtc_stream_src"   "$INTEG/__init__.py"
+check "manifest 版本含 mic"        '"version"'            "$INTEG/manifest.json"
 
-# v1.0.9: 麥克風重連競態的修復
-if grep -q "this.ws === ws" "$WWW/video-rtc.js" 2>/dev/null; then
-  echo "    OK  麥克風重連競態修復"
+if grep -q '"version": *"[^"]*-mic' "$INTEG/manifest.json" 2>/dev/null; then
+    V=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$INTEG/manifest.json")
+    echo "    OK  整合版本 → $V"
+    echo "        （HA 重啟時會用這個版本自動改寫 Lovelace 資源 URL）"
 else
-  echo "    [X]  麥克風重連競態修復 沒找到（會造成麥克風無聲）"; FAIL=1
-fi
-
-if grep -q "if (!this.ws) return;" "$WWW/video-rtc.js" 2>/dev/null; then
-  echo "    OK  onopen null 防護"
-else
-  echo "    [X]  onopen null 防護 沒找到"; FAIL=1
-fi
-
-if grep -q "webrtc-camera" "$WWW/webrtc-camera.js" 2>/dev/null; then
-  echo "    OK  卡片元素名 (webrtc-camera)"
-else
-  echo "    [X]  卡片元素名 異常"; FAIL=1
-fi
-
-if grep -q "api/webrtc/ws" "$WWW/webrtc-camera.js" 2>/dev/null; then
-  echo "    OK  WebSocket 路由 (/api/webrtc/ws)"
-else
-  echo "    [X]  WebSocket 路由 異常"; FAIL=1
+    echo "    [X]  manifest 版本沒有 mic 後綴"; FAIL=1
 fi
 echo
 
 if [ $FAIL -ne 0 ]; then
-  echo "驗證沒通過，請回報上面的訊息。"
-  exit 1
+    echo "驗證沒通過，請回報上面的訊息。"
+    exit 1
 fi
 
-echo "=============================================="
-echo " 安裝完成"
-echo "=============================================="
-echo
-echo " 接下來："
-echo
-echo " 1. 重啟 Home Assistant"
-echo
-echo " 2. HA -> 設定 -> 系統 -> 儀表板 -> 右上角「資源」"
-echo "    刪掉舊的 WebRTC Camera 那筆（如果有的話）"
-echo
-echo " 3. 瀏覽器重新載入儀表板"
-echo
-echo " 4. 卡片設定用 url:（不是 entity:）："
-echo
-echo "    type: custom:webrtc-camera"
-echo "    url: tapo44"
-echo "    media: video,audio,microphone"
-echo "    ui: true"
-echo
-echo "    media 一定要包含 microphone，少了這三個字麥克風不會啟用。"
-echo "    ui 一定要開，麥克風按鈕在 ui 控制列裡。"
-echo
-echo "    為什麼不能用 entity:？"
-echo "      上游的 entity: 只接受真正的 camera entity_id"
-echo "      （像 camera.tapo_c200_mainstream），填 go2rtc 的 stream 名稱"
-echo "      會直接報 \"Can't get URL for tapo44\"。"
-echo "      url: 不做驗證，直接把名稱當成 go2rtc 的 src 丟出去。"
-echo
+# --- 8. Restart Home Assistant --------------------------------------------
+restart_ha() {
+    # docker (the common case for HA OS / Supervised)
+    if command -v docker >/dev/null 2>&1; then
+        local c
+        for c in homeassistant home-assistant hassio_supervisor; do
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
+                echo "    docker restart $c"
+                docker restart "$c" >/dev/null 2>&1 && return 0
+            fi
+        done
+    fi
+    # systemd
+    if command -v systemctl >/dev/null 2>&1; then
+        for u in homeassistant hassio home-assistant; do
+            if systemctl list-unit-files 2>/dev/null | grep -q "^$u.service"; then
+                echo "    systemctl restart $u"
+                systemctl restart "$u" >/dev/null 2>&1 && return 0
+            fi
+        done
+    fi
+    return 1
+}
+
+if [ "$RESTART_HA" = "1" ]; then
+    echo "[7] 重啟 Home Assistant..."
+    if restart_ha; then
+        echo "    OK"
+    else
+        echo "    [警告] 找不到 HA 的服務，請手動重啟。"
+    fi
+    echo
+else
+    echo "[7] 略過重啟 (RESTART_HA=0)"
+    echo
+fi
+
+cat <<EOF
+==============================================
+ 安裝完成
+==============================================
+
+ 麥克風按鈕現在會出現在相機卡片的控制列。
+
+ 卡片設定只要這樣（不需要加 ui: 或 media: microphone）：
+
+     type: custom:webrtc-camera
+     url: tapo44
+
+  entity: 也可以直接填 go2rtc 的 stream 名稱了，
+  整合會自己去 go2rtc 查詢。
+
+ 瀏覽器記得 Ctrl+Shift+R 強制重新載入一次，
+ 因為舊的 JS 可能還在瀏覽器快取裡。
+
+ 備份檔案（需要還原時用）：
+   $WWW/*.bak-$STAMP
+   $INTEG/__init__.py.bak-$STAMP
+EOF
