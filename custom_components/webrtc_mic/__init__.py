@@ -49,6 +49,24 @@ DASH_CAST_SCHEMA = vol.Schema(
 
 LINKS = {}  # 2 3 4
 
+# YAML setup support.
+#
+# The card JS is only served (and only registered as a Lovelace resource)
+# from async_setup. For a config_flow-only integration async_setup runs
+# only after a config entry exists - and the config flow refuses to create
+# one while go2rtc is unreachable. That leaves a fresh installation with a
+# "Custom element not found" card and no obvious way out.
+#
+# Declaring a CONFIG_SCHEMA lets the integration be set up from YAML, so
+# the card is available even before (or without) go2rtc being reachable.
+CONFIG_SCHEMA = vol.Schema(
+    {
+        # URL of the go2rtc server. Leave empty to use http://localhost:1984/
+        vol.Optional("url", default=utils.DEFAULT_URL): cv.string,
+    },
+    extra=vol.ALLOW_EXTRA,
+)
+
 # DDoS protection against requests to HLS proxy
 # streams are additionally protected by a random playlist identifier
 HLS_COOKIE = "webrtc-mic-hls-session"
@@ -56,6 +74,10 @@ HLS_SESSION = str(uuid.uuid4())
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
+    # 0. go2rtc URL from YAML (if any). The config entry overwrites it later.
+    yaml_config = config.get(DOMAIN) or {}
+    hass.data[DOMAIN] = yaml_config.get("url") or utils.DEFAULT_URL
+
     # 1. Serve lovelace card
     path = Path(__file__).parent / "www"
     for name in ("video-rtc.js", "webrtc-mic-camera.js", "digital-ptz.js"):
@@ -122,7 +144,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     # 2. Check if go2rtc running on same server
     if not go_url:
-        go_url = await utils.check_go2rtc(hass)
+        go_url = await utils.check_go2rtc(hass) or utils.DEFAULT_URL
 
     if go_url:
         # netloc example: admin:admin@192.168.1.123:1984

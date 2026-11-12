@@ -32,7 +32,22 @@ the implementation has gaps. This fork fixes:
 2. Install **WebRTC Camera with Microphone**.
 3. Restart Home Assistant.
 4. Go to *Settings → Devices & Services → Add Integration* and search for
-   *WebRTC Camera with Microphone*.
+   *WebRTC Camera with Microphone*. Point it at your go2rtc server.
+
+### YAML (recommended when go2rtc is not reachable yet)
+
+The card JavaScript is only served once the integration is set up. The config
+flow refuses to create an entry while go2rtc is unreachable, which leaves a
+fresh install with a *Custom element not found* card. Declaring a
+`CONFIG_SCHEMA` lets you set it up from YAML instead:
+
+```yaml
+webrtc_mic:
+  url: http://192.168.1.10:1984/
+```
+
+Restart Home Assistant. The card is then available even if go2rtc is not
+reachable yet - the config entry can be added later.
 
 ### Manual
 
@@ -43,6 +58,32 @@ mkdir -p custom_components/webrtc_mic
 ```
 
 Restart Home Assistant, then add the integration from the UI.
+
+## Troubleshooting: "Custom element not found: webrtc-mic-camera"
+
+This means the browser could not load the card JavaScript. Check in order:
+
+1. **Is the integration set up?** The card JS is served from `async_setup`,
+   which only runs once the integration is set up (via YAML or a config
+   entry). Check *Settings → Devices & Services* for *WebRTC Camera with
+   Microphone*, or add the YAML block above.
+2. **Is the Lovelace resource registered?** In *Settings → System → Dashboards
+   → Resources* there must be an entry for `/webrtc_mic/webrtc-mic-camera.js`.
+   The integration adds it automatically in storage mode. If you manage
+   dashboards in **YAML mode**, add it by hand:
+   ```yaml
+   url: /webrtc_mic/webrtc-mic-camera.js
+   type: module
+   ```
+3. **Browser cache.** Module resources are served with a long
+   `Cache-Control`, so `Ctrl+Shift+R` often does nothing. Change the query
+   string of the resource URL (`?v=...`) to force a refetch, or bump the
+   `version` in `manifest.json` and restart Home Assistant.
+4. **HTTPS.** The microphone only works in a secure context. Use
+   `https://<your-ha-host>`.
+
+A diagnostic script is included at `tools/diagnose-webrtc-mic.sh` - run it on
+the Home Assistant host to check all of the above at once.
 
 ## Lovelace card
 
