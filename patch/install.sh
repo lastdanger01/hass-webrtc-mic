@@ -23,6 +23,11 @@ TAG="${TAG:-}"
 
 api_get() { curl -sSL "$1" 2>/dev/null; }
 
+# Files that must exist in the release before we touch anything.
+REQUIRED="video-rtc.js.patch video-rtc.js.v361.patch video-rtc.js.v360.patch
+          webrtc-camera.js.patch webrtc-camera.js.v361.patch webrtc-camera.js.v360.patch
+          video-rtc.js.racefix.patch apply_patch.py"
+
 # 1. Which release?
 if [ -z "$TAG" ]; then
     TAG=$(api_get "https://api.github.com/repos/$REPO/releases/latest" \
