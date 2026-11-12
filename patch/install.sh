@@ -12,7 +12,10 @@
 #   5. 提示接下來要做什麼
 set -u
 
-BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.8/patch"
+# Download from the immutable commit SHA, not the tag. raw.githubusercontent
+# caches by URL and a force-pushed tag can keep serving the previous file
+# for a while - the SHA always resolves to exactly this release.
+BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/630ae031703c945d89c02356fc8d166b47f43d0f/patch"
 
 # raw.githubusercontent.com caches by URL, and a force-pushed tag can still
 # serve the old file for a while. A dummy query string busts that cache
