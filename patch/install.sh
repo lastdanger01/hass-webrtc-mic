@@ -2,7 +2,7 @@
 # 一鍵安裝 WebRTC 麥克風對講補丁（patch 上游 webrtc 整合的兩個 JS）
 #
 # 用法（在 HA 主機上執行）：
-#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.8/patch/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.9/patch/install.sh | sudo bash
 #
 # 它會自動：
 #   1. 找到上游 webrtc 整合的 www 目錄
@@ -12,14 +12,36 @@
 #   5. 提示接下來要做什麼
 set -u
 
-# Download from the immutable commit SHA, not the tag. raw.githubusercontent
-# caches by URL and a force-pushed tag can keep serving the previous file
-# for a while - the SHA always resolves to exactly this release.
-BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/630ae031703c945d89c02356fc8d166b47f43d0f/patch"
+REPO="lastdanger01/hass-webrtc-mic"
+TAG="v1.0.9"
 
-# raw.githubusercontent.com caches by URL, and a force-pushed tag can still
-# serve the old file for a while. A dummy query string busts that cache
-# while the path still resolves.
+# Resolve the tag to its commit SHA at run time. raw.githubusercontent.com
+# caches by URL and a force-pushed tag can keep serving the previous file
+# for a while, so we download from the immutable SHA instead. Resolving it
+# here (instead of hardcoding it) keeps this script correct even when the
+# tag is later re-pointed at a new commit.
+resolve_sha() {
+    sha=""
+    if command -v git >/dev/null 2>&1; then
+        sha=$(git ls-remote "https://github.com/$REPO.git" "refs/tags/$TAG^{}" 2>/dev/null | cut -f1)
+        [ -z "$sha" ] && sha=$(git ls-remote "https://github.com/$REPO.git" "refs/tags/$TAG" 2>/dev/null | cut -f1)
+    fi
+    if [ -z "$sha" ] && command -v curl >/dev/null 2>&1; then
+        sha=$(curl -sSL "https://api.github.com/repos/$REPO/commits/$TAG" 2>/dev/null \
+              | sed -n 's/.*"sha": *\"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
+    fi
+    echo "$sha"
+}
+
+SHA=$(resolve_sha)
+if [ -n "$SHA" ]; then
+    BASE_URL="https://raw.githubusercontent.com/$REPO/$SHA/patch"
+else
+    echo "[警告] 無法解析 $TAG 的 commit SHA，改用 tag 路徑。" >&2
+    BASE_URL="https://raw.githubusercontent.com/$REPO/$TAG/patch"
+fi
+
+# extra cache buster
 CACHE_BUST="?v=$(date +%s)"
 
 echo "=============================================="
