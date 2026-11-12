@@ -2,7 +2,7 @@
 # 一鍵安裝 WebRTC 麥克風對講補丁（patch 上游 webrtc 整合的兩個 JS）
 #
 # 用法（在 HA 主機上執行）：
-#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.7/patch/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.8/patch/install.sh | sudo bash
 #
 # 它會自動：
 #   1. 找到上游 webrtc 整合的 www 目錄
@@ -12,7 +12,7 @@
 #   5. 提示接下來要做什麼
 set -u
 
-BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.7/patch"
+BASE_URL="https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.8/patch"
 
 echo "=============================================="
 echo " WebRTC 麥克風對講補丁 - 安裝"
