@@ -185,6 +185,19 @@ else
   echo "    [X]  PCMA 編碼偏好 沒找到"; FAIL=1
 fi
 
+# v1.0.9: 麥克風重連競態的修復
+if grep -q "this.ws === ws" "$WWW/video-rtc.js" 2>/dev/null; then
+  echo "    OK  麥克風重連競態修復"
+else
+  echo "    [X]  麥克風重連競態修復 沒找到（會造成麥克風無聲）"; FAIL=1
+fi
+
+if grep -q "if (!this.ws) return;" "$WWW/video-rtc.js" 2>/dev/null; then
+  echo "    OK  onopen null 防護"
+else
+  echo "    [X]  onopen null 防護 沒找到"; FAIL=1
+fi
+
 if grep -q "webrtc-camera" "$WWW/webrtc-camera.js" 2>/dev/null; then
   echo "    OK  卡片元素名 (webrtc-camera)"
 else
