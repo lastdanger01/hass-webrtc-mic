@@ -33,6 +33,11 @@ the implementation has gaps. This fork fixes:
 | Side by side with upstream | not possible (same files) | yes |
 | Files | `patch/` in this repo | HACS install of `webrtc_mic` |
 
+> **Check which one your card uses first.** The patch modifies the *upstream*
+> `webrtc` integration, so it only affects cards written as
+> `type: custom:webrtc-camera`. A card written as
+> `type: custom:webrtc-mic-camera` uses the fork and is unaffected by it.
+
 **Most people want the simple one.** It patches the two upstream JS files
 in place - that is all the microphone feature needs. See `patch/README.md`.
 

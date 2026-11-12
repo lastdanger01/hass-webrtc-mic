@@ -194,4 +194,11 @@ echo "    media: video,audio,microphone"
 echo "    ui: true"
 echo
 echo "    media 一定要包含 microphone，少了這三個字麥克風不會啟用。"
+echo "    ui 一定要開，麥克風按鈕在 ui 控制列裡。"
+echo
+echo "    為什麼不能用 entity:？"
+echo "      上游的 entity: 只接受真正的 camera entity_id"
+echo "      （像 camera.tapo_c200_mainstream），填 go2rtc 的 stream 名稱"
+echo "      會直接報 \"Can't get URL for tapo44\"。"
+echo "      url: 不做驗證，直接把名稱當成 go2rtc 的 src 丟出去。"
 echo

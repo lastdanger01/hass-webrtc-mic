@@ -82,6 +82,23 @@ patch -p0 < /path/to/webrtc-camera.js.patch
 
 **如果對方的上游版本跟這裡不同**，`patch` 會失敗（hunk 不匹配）。那時要把 `video-rtc.js` / `webrtc-camera.js` 換成這個資料夾裡的 `.orig` 基準版本再套 —— 但那會把對方自己的修改洗掉，所以**先 diff 一下看看對方有沒有改過**。
 
+## 先確認你用的是哪個整合
+
+這個補丁是**改上游 `webrtc` 整合的兩個 JS**，所以：
+
+- 卡片元素名是 **`custom:webrtc-camera`**（上游的）
+- 如果你的卡片寫的是 `custom:webrtc-mic-camera`，那是另一個獨立整合
+  （本 repo 的 fork），**這個補丁對它沒有作用**
+
+先看你的卡片 YAML 開頭寫哪一個：
+
+| 卡片 YAML | 你需要什麼 |
+|---|---|
+| `type: custom:webrtc-camera` | **這個補丁**（本頁說明） |
+| `type: custom:webrtc-mic-camera` | fork 整合，本 repo 的 release（`webrtc_mic.zip`） |
+
+> 兩者可以並存：元素名不同、路由不同（`/api/webrtc/ws` vs `/api/webrtc_mic/ws`）。
+
 ## 卡片參數：`url:` 才是對的做法
 
 上游的 `webrtc` 整合對 `entity:` 與 `url:` 的處理**完全不同**：
