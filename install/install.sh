@@ -4,7 +4,7 @@
 # 在 Home Assistant 主機上執行（HA OS 用 Terminal & SSH add-on，
 # Supervised / Container 用 ssh 進去跑）：
 #
-#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.16/install/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.17/install/install.sh | sudo bash
 #
 # 這一支腳本一次做完所有事：
 #
@@ -21,7 +21,7 @@
 #   url: tapo44
 #
 # 環境變數：
-#   TAG=v1.0.16          指定版本（不指定＝自動取最新 release）
+#   TAG=v1.0.17          指定版本（不指定＝自動取最新 release）
 #   WITH_UPSTREAM_PATCH=1 同時 patch 上游 webrtc 整合
 #   RESTART_HA=0         跳過重啟 HA
 set -u
@@ -47,7 +47,7 @@ fi
 if [ -z "$TAG" ]; then
     echo "[錯誤] 無法確定要安裝的版本（拿不到 release 資訊）。" >&2
     echo "       請改用指定版本：" >&2
-    echo "       TAG=v1.0.16 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.16/install/install.sh | sudo bash" >&2
+    echo "       TAG=v1.0.17 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.17/install/install.sh | sudo bash" >&2
     exit 1
 fi
 

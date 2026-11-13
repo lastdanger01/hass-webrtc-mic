@@ -228,14 +228,18 @@ async def ws_connect(hass: HomeAssistant, params: dict) -> str:
                     src = f"{get_url(hass)}/api/camera_proxy_stream/{entity_id}?token={token}"
 
         if src is None:
-            # go2rtc stream name fallback
-            stream = await utils.check_go2rtc_stream(hass, entity_id)
+            # go2rtc stream name fallback. Search every reachable go2rtc
+            # instance, because the configured one may not hold the
+            # cameras - that produced the bare "stream not found".
+            stream, stream_server = await utils.find_stream_server(hass, entity_id)
             if stream:
                 src = stream
+                if stream_server:
+                    server = stream_server
 
         if src is None:
             # Give the user something actionable instead of a bare assert.
-            streams = await utils.list_go2rtc_streams(hass)
+            per_server = await utils.all_go2rtc_streams(hass)
             go_url = hass.data.get(DOMAIN)
             if isinstance(go_url, Server):
                 # the integration started its own bundled go2rtc, which has
@@ -247,11 +251,14 @@ async def ws_connect(hass: HomeAssistant, params: dict) -> str:
                     f"`webrtc_mic: url: http://<go2rtc>:1984/` in "
                     f"configuration.yaml, or use the URL of a camera entity."
                 )
-            if streams:
+            if per_server:
+                detail = "; ".join(
+                    f"{url} -> {', '.join(names)}" for url, names in per_server.items()
+                )
                 raise Exception(
-                    f"Can't get URL for {entity_id}. Available go2rtc streams: "
-                    f"{', '.join(streams)}. Use one of them as `entity`, or use "
-                    f"`url:` instead."
+                    f"Can't get URL for {entity_id}. go2rtc instances reached: "
+                    f"{detail}. Use one of these stream names as `entity`, or "
+                    f"use `url:` instead."
                 )
             raise Exception(
                 f"Can't get URL for {entity_id}. The go2rtc server at {go_url} "
@@ -263,6 +270,28 @@ async def ws_connect(hass: HomeAssistant, params: dict) -> str:
     elif src := params.get("url"):
         if "{{" in src or "{%" in src:
             src = Template(src, hass).async_render()
+        # A bare name (no scheme) is a go2rtc *stream name*, not a URL.
+        # Resolve it against every reachable instance and switch to the
+        # one that really has it, instead of connecting to an empty
+        # go2rtc and failing with "stream not found".
+        if "://" not in src:
+            stream, stream_server = await utils.find_stream_server(hass, src)
+            if stream:
+                src = stream
+                if stream_server:
+                    server = stream_server
+            else:
+                per_server = await utils.all_go2rtc_streams(hass)
+                if per_server:
+                    detail = "; ".join(
+                        f"{url} -> {', '.join(names)}"
+                        for url, names in per_server.items()
+                    )
+                    raise Exception(
+                        f"go2rtc stream '{src}' not found. go2rtc instances "
+                        f"reached: {detail}. Use one of these stream names, or "
+                        f"a full go2rtc URL."
+                    )
         query = {"src": src}
     else:
         raise Exception("Missing url or entity")

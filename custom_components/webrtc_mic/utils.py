@@ -220,17 +220,28 @@ def candidate_urls(hass: HomeAssistant) -> list:
         if url not in out:
             out.append(url)
 
-    # 1. URL configured in the official go2rtc integration. Only trust it
-    #    if the user actually pointed it at their own server - the HA
-    #    managed instance stores the HA_MANAGED_URL there, and that one
-    #    never has any cameras.
-    try:
-        for entry in hass.config_entries.async_entries("go2rtc"):
-            url = entry.data.get(CONF_URL)
-            if url and "11984" not in url:
-                add(url)
-    except Exception:
-        pass
+    # 1. URLs that other integrations already know about.
+    #
+    #    The official *go2rtc* integration stores it, and so does the
+    #    upstream *webrtc* integration (AlexxIT/WebRTC) - its config entry
+    #    holds the very same go2rtc URL. Reading the upstream entry
+    #    matters: on a machine that has the upstream integration
+    #    installed, that entry is often the only place the real go2rtc URL
+    #    is recorded. Missing it made us fall back to a candidate that
+    #    answers HTTP but has no streams, and every camera card then failed
+    #    with "stream not found".
+    #
+    #    Only trust a URL if it points at the user's own server - the
+    #    HA-managed instance stores HA_MANAGED_URL there and never has any
+    #    cameras of its own.
+    for domain in ("go2rtc", "webrtc", DOMAIN):
+        try:
+            for entry in hass.config_entries.async_entries(domain):
+                url = entry.data.get(CONF_URL)
+                if url and "11984" not in url:
+                    add(url)
+        except Exception:
+            pass
 
     # 2. go2rtc on the same host / in the same container
     add(DEFAULT_URL)
@@ -244,6 +255,19 @@ def candidate_urls(hass: HomeAssistant) -> list:
         "ccab4aaf-frigate",
         "ccab4aaf-frigate-fa",
         "ccab4aaf-frigate-beta",
+    ):
+        add(f"http://{host}:1984/")
+
+    # 5b. Home Assistant OS add-on hostnames. The add-on slug is prefixed
+    #     with a per-install id, so the name is not predictable; try the
+    #     well-known aliases plus the add-on id that the official go2rtc
+    #     add-on uses when it is the only candidate.
+    for host in (
+        "a0d7b954-go2rtc",
+        "core-go2rtc",
+        "hassio-go2rtc",
+        "homeassistant-go2rtc",
+        "go2rtc",
     ):
         add(f"http://{host}:1984/")
 
@@ -316,12 +340,18 @@ async def detect_go2rtc(hass: HomeAssistant) -> Optional[str]:
     return None
 
 
-async def list_go2rtc_streams(hass: HomeAssistant, session=None) -> list:
-    """Return the list of stream names known to the go2rtc server."""
+async def list_go2rtc_streams(
+    hass: HomeAssistant, session=None, url: Optional[str] = None
+) -> list:
+    """Return the list of stream names known to the go2rtc server.
+
+    `url` overrides the configured server. That matters when the
+    configured instance is not the one that actually holds the cameras.
+    """
     try:
         if session is None:
             session = async_get_clientsession(hass)
-        r = await session.get(api_streams(hass), timeout=3)
+        r = await session.get(api_streams(hass, url=url), timeout=3)
         if r.status >= 400:
             return []
         streams = await r.json()
@@ -334,7 +364,7 @@ async def list_go2rtc_streams(hass: HomeAssistant, session=None) -> list:
 
 
 async def check_go2rtc_stream(
-    hass: HomeAssistant, name: str, session=None
+    hass: HomeAssistant, name: str, session=None, url: Optional[str] = None
 ) -> Optional[str]:
     """Check whether `name` is a known go2rtc stream.
 
@@ -363,12 +393,91 @@ async def check_go2rtc_stream(
         except Exception:
             pass
 
-    streams = await list_go2rtc_streams(hass, session=session)
+    streams = await list_go2rtc_streams(hass, session=session, url=url)
 
     if stream_name in streams:
         return stream_name
 
     return None
+
+
+async def find_stream_server(
+    hass: HomeAssistant, name: str, session=None
+) -> tuple[Optional[str], Optional[str]]:
+    """Locate a go2rtc stream by name.
+
+    Returns ``(stream_name, server_url)``. The server URL is the go2rtc
+    instance that actually holds the stream.
+
+    Why this is needed: several go2rtc instances can answer HTTP at the
+    same time - the HA-managed one on port 11984, a bundled binary, an
+    add-on - and most of them have no streams of their own. Connecting to
+    the wrong one produces the bare go2rtc error "stream not found" with
+    no hint about which instance was used or what the real names are.
+
+    So we search every candidate instance and return the one that really
+    has the requested stream.
+    """
+    if not name:
+        return None, None
+
+    stream_name = name
+
+    if name.startswith("media_player."):
+        try:
+            from homeassistant.helpers import entity_registry as er
+
+            entry = er.async_get(hass).async_get(name)
+            if entry and entry.unique_id:
+                stream_name = entry.unique_id
+        except Exception:
+            pass
+
+    # The configured server first - it is the one the card normally uses.
+    configured = hass.data.get(DOMAIN)
+    if isinstance(configured, Server):
+        configured = "http://localhost:1984/"
+
+    candidates: list[str] = []
+    if configured:
+        candidates.append(configured)
+    for url in candidate_urls(hass):
+        if url not in candidates:
+            candidates.append(url)
+
+    for url in candidates:
+        streams = await list_go2rtc_streams(hass, session=session, url=url)
+        if stream_name in streams:
+            return stream_name, url
+
+    return None, None
+
+
+async def all_go2rtc_streams(hass: HomeAssistant, session=None) -> dict:
+    """Return {server_url: [stream names]} for every reachable instance.
+
+    Used to build an error message that tells the user which instance is
+    in use and what the real stream names are.
+    """
+    out: dict = {}
+
+    configured = hass.data.get(DOMAIN)
+    if isinstance(configured, Server):
+        configured = "http://localhost:1984/"
+
+    candidates: list[str] = []
+    if configured:
+        candidates.append(configured)
+    for url in candidate_urls(hass):
+        if url not in candidates:
+            candidates.append(url)
+
+    for url in candidates:
+        streams = await list_go2rtc_streams(hass, session=session, url=url)
+        if streams:
+            out[url] = streams
+
+    return out
 
 
 async def check_go2rtc(hass: HomeAssistant, url: str = DEFAULT_URL) -> Optional[str]:
@@ -380,7 +489,9 @@ async def check_go2rtc(hass: HomeAssistant, url: str = DEFAULT_URL) -> Optional[
         return None
 
 
-def api_streams(hass: HomeAssistant) -> str:
+def api_streams(hass: HomeAssistant, url: Optional[str] = None) -> str:
+    if url:
+        return urljoin(url, "api/streams")
     entry = hass.data[DOMAIN]
     go_url = "http://localhost:1984/" if isinstance(entry, Server) else entry
     return urljoin(go_url, "api/streams")
