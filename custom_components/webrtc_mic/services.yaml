@@ -57,3 +57,32 @@ dash_cast:
       example: http://192.168.1.123:8123
       selector:
         text:
+
+play_media:
+  fields:
+    stream:
+      example: kitchen225
+      required: true
+      selector:
+        text:
+    media_content_id:
+      example: media-source://media_source/local/song.mp3
+      required: true
+      selector:
+        text:
+    title:
+      example: Song Title
+      selector:
+        text:
+    audio:
+      default: pcma
+      selector:
+        text:
+
+stop_media:
+  fields:
+    stream:
+      example: kitchen225
+      required: true
+      selector:
+        text:

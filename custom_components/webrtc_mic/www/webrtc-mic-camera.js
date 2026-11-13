@@ -936,20 +936,31 @@ class WebRTCCamera extends VideoRTC {
         }
     }
 
+    /**
+     * Play a track on the camera speaker.
+     *
+     * The integration ships a `webrtc_mic.play_media` service that needs no
+     * configuration at all. When that service is not available yet - an
+     * older installation, for example - the card falls back to the
+     * media_player entity of the camera.
+     */
     async playMusic(item) {
-        const player = await this.musicPlayer();
-        if (!player) {
-            console.warn('No media_player found for stream', this.streamKey);
-            this.musicError(`找不到這台相機的對講喇叭（stream: ${this.streamKey || '?'}）`);
+        const stream = this.streamKey;
+        if (!stream) {
+            this.musicError('這張卡片沒有設定 stream，無法播放');
             return;
         }
         try {
             const mediaUrl = await this.musicMediaUrl(item);
-            await this.hass.callService('media_player', 'play_media', {
-                entity_id: player,
-                media_content_id: mediaUrl,
-                media_content_type: 'music',
-            });
+            try {
+                await this.hass.callService('webrtc_mic', 'play_media', {
+                    stream: stream,
+                    media_content_id: mediaUrl,
+                });
+            } catch (err) {
+                if (!this.isMissingService(err)) throw err;
+                await this.playMusicWithEntity(item, mediaUrl);
+            }
             const btn = this.querySelector('.music');
             if (btn) {
                 btn.icon = 'mdi:music-note-off';
@@ -970,17 +981,49 @@ class WebRTCCamera extends VideoRTC {
         }
     }
 
-    async stopMusic() {
+    /** Whether an error means the service is not registered. */
+    isMissingService(err) {
+        if (!err) return false;
+        if (err.code === 'not_found') return true;
+        const message = ((err && err.message) || String(err)).toLowerCase();
+        return message.includes('not found') || message.includes('找不到服務')
+            || message.includes('service not found');
+    }
+
+    /** Play through the media_player entity of the camera. */
+    async playMusicWithEntity(item, mediaUrl) {
         const player = await this.musicPlayer();
+        if (!player) {
+            console.warn('No media_player found for stream', this.streamKey);
+            this.musicError(`找不到這台相機的對講喇叭（stream: ${this.streamKey || '?'}）`);
+            return;
+        }
+        await this.hass.callService('media_player', 'play_media', {
+            entity_id: player,
+            media_content_id: mediaUrl,
+            media_content_type: 'music',
+        });
+    }
+
+    async stopMusic() {
+        const stream = this.streamKey;
         const btn = this.querySelector('.music');
         if (btn) {
             btn.icon = 'mdi:music-note';
             btn.classList.remove('playing');
             btn.title = '播放媒體到這台相機';
         }
-        if (!player) return;
+        if (!stream) return;
         try {
-            await this.hass.callService('media_player', 'media_stop', {entity_id: player});
+            try {
+                await this.hass.callService('webrtc_mic', 'stop_media', {stream: stream});
+            } catch (err) {
+                if (!this.isMissingService(err)) throw err;
+                const player = await this.musicPlayer();
+                if (player) {
+                    await this.hass.callService('media_player', 'media_stop', {entity_id: player});
+                }
+            }
         } catch (err) {
             console.warn(err);
         }

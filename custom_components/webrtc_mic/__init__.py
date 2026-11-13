@@ -20,6 +20,7 @@ from homeassistant.helpers.network import get_url
 from homeassistant.helpers.template import Template
 
 from . import utils
+from . import speaker
 from .utils import DOMAIN, Server
 
 _LOGGER = logging.getLogger(__name__)
@@ -153,10 +154,36 @@ async def async_setup(hass: HomeAssistant, config: dict):
     hass.services.async_register(DOMAIN, "create_link", create_link, CREATE_LINK_SCHEMA)
     hass.services.async_register(DOMAIN, "dash_cast", dash_cast, DASH_CAST_SCHEMA)
 
+    # 7. Play audio through a camera speaker.
+    #
+    # The media_player platform of this integration needs one YAML block
+    # per camera. These services do the same thing without any
+    # configuration, so a camera can play music right away.
+    _register_speaker_services(hass)
+
     return True
 
 
+def _register_speaker_services(hass: HomeAssistant) -> None:
+    """Register the services that play audio through a camera speaker.
+
+    This is called from both the setup and the entry setup, so the
+    services are available again after the integration was reloaded.
+    """
+    if not hass.services.has_service(DOMAIN, "play_media"):
+        hass.services.async_register(
+            DOMAIN, "play_media", speaker.async_play_media, speaker.PLAY_MEDIA_SCHEMA
+        )
+    if not hass.services.has_service(DOMAIN, "stop_media"):
+        hass.services.async_register(
+            DOMAIN, "stop_media", speaker.async_stop_media, speaker.STOP_MEDIA_SCHEMA
+        )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
+    # 0. Make sure the speaker services are there after a reload.
+    _register_speaker_services(hass)
+
     # 1. If user set custom url
     go_url = entry.data.get(CONF_URL)
 
