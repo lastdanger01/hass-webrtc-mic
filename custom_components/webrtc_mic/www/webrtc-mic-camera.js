@@ -146,6 +146,11 @@ class WebRTCCamera extends VideoRTC {
         this.renderMusic();
         this.renderShortcuts();
         this.renderStyle();
+
+        // The playback lives in Home Assistant and go2rtc, not in this
+        // card. After a page reload the card is a brand new element, so it
+        // has to ask what is playing instead of assuming nothing is.
+        this.restoreMusicState();
     }
 
     onconnect() {
@@ -990,6 +995,11 @@ class WebRTCCamera extends VideoRTC {
                 await this.hass.callService('webrtc_mic', 'play_media', {
                     stream: stream,
                     media_content_id: mediaUrl,
+                    // The original media id. The resolved URL is signed and
+                    // changes on every resolve, so it cannot be used to
+                    // recognise the same track after a page reload.
+                    source_id: item.media_content_id || mediaUrl,
+                    title: item.title || '',
                 });
             } catch (err) {
                 if (!this.isMissingService(err)) throw err;
@@ -1060,6 +1070,56 @@ class WebRTCCamera extends VideoRTC {
             }
         } catch (err) {
             console.warn(err);
+        }
+    }
+
+    /**
+     * Restore the music button after a page reload.
+     *
+     * The audio keeps playing in go2rtc while the browser reloads, so the
+     * new card element has to find out what is playing. Without this the
+     * button would show "stopped" although the camera is still playing,
+     * and pressing play again would start the track from the beginning.
+     */
+    async restoreMusicState() {
+        const stream = this.streamKey;
+        if (!stream) return;
+
+        const btn = this.querySelector('.music');
+        if (!btn) return;
+
+        // The card is created before Home Assistant hands over the `hass`
+        // object, so this can be called too early. The `onhass` callback
+        // runs as soon as it is available.
+        if (!this.hass) {
+            if (!this._musicStatePending) {
+                this._musicStatePending = true;
+                this.onhass.push(() => {
+                    this._musicStatePending = false;
+                    this.restoreMusicState();
+                });
+            }
+            return;
+        }
+
+        try {
+            const data = await this.hass.callWS({
+                type: 'auth/sign_path', path: '/api/webrtc_mic/media_status'
+            });
+            const url = this.hass.hassUrl(data.path) + '?stream=' + encodeURIComponent(stream);
+            const r = await fetch(url, { credentials: 'same-origin' });
+            if (!r.ok) return;
+
+            const state = await r.json();
+            if (state && state.playing) {
+                btn.icon = 'mdi:music-note-off';
+                btn.classList.add('playing');
+                btn.title = state.title ? `停止播放：${state.title}` : '停止播放';
+            }
+        } catch (err) {
+            // A missing endpoint is not an error: the card still works, the
+            // button just starts in the "stopped" state.
+            console.debug(err);
         }
     }
 

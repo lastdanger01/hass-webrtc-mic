@@ -113,6 +113,9 @@ async def async_setup(hass: HomeAssistant, config: dict):
     # 5b. Report how many people are watching the cameras
     hass.http.register_view(ViewersView)
 
+    # 5c. Report what is playing on each camera
+    hass.http.register_view(MediaStatusView)
+
     # 6. Register webrtc.create_link and webrtc.dash_cast services:
 
     async def create_link(call: ServiceCall):
@@ -480,6 +483,49 @@ class WebSocketView(HomeAssistantView):
             await ws_server.send_json({"type": "error", "value": str(e)})
 
         return ws_server
+
+
+class MediaStatusView(HomeAssistantView):
+    """Report what is currently playing on each camera.
+
+    The playback itself runs in go2rtc, so a page reload does not stop it.
+    The card still needs to know whether something is playing, otherwise the
+    music button would show "stopped" while the camera keeps playing, and
+    pressing play again would start the track from the beginning.
+
+    This view is signed like the other endpoints, so the browser can call
+    it from the dashboard without mixed-content problems.
+    """
+
+    url = "/api/webrtc_mic/media_status"
+    name = "api:webrtc_mic:media_status"
+    requires_auth = False
+
+    async def get(self, request: web.Request):
+        if not utils.validate_signed_request(request):
+            raise HTTPUnauthorized()
+
+        hass: HomeAssistant = request.app["hass"]
+
+        stream = request.query.get("stream")
+        if stream:
+            state = speaker.get_state(stream)
+
+            # go2rtc is the real source of truth: the audio keeps playing
+            # even when Home Assistant was restarted and lost the state it
+            # kept in memory. So the answer is taken from go2rtc, and the
+            # saved state only adds the title.
+            playing = await speaker.async_is_playing(hass, stream)
+
+            if state:
+                state = dict(state)
+                state["playing"] = playing
+            else:
+                state = {"stream": stream, "playing": playing}
+
+            return web.json_response(state)
+
+        return web.json_response(speaker.get_all_states())
 
 
 class ViewersView(HomeAssistantView):

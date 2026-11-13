@@ -11,6 +11,7 @@ like the media_player platform does it, so both paths behave the same.
 
 import asyncio
 import logging
+import time
 
 import voluptuous as vol
 from homeassistant.components import media_source
@@ -32,6 +33,10 @@ PLAY_MEDIA_SCHEMA = vol.Schema(
         vol.Required("stream"): cv.string,
         vol.Required("media_content_id"): cv.string,
         vol.Optional("title"): cv.string,
+        # The original media id of the track. The resolved URL carries a
+        # signature that is regenerated on every resolve, so it cannot be
+        # used to recognise "the same track" after a page reload.
+        vol.Optional("source_id"): cv.string,
         vol.Optional("audio", default=DEFAULT_AUDIO): cv.string,
     }
 )
@@ -45,6 +50,14 @@ STOP_MEDIA_SCHEMA = vol.Schema(
 # One lock per stream: go2rtc accepts only one pushed source per
 # destination, so two concurrent pushes would leave an orphan behind.
 _LOCKS: dict[str, asyncio.Lock] = {}
+
+# What is currently playing on each camera, keyed by go2rtc stream name.
+#
+# The playback itself lives in go2rtc, not in the browser, so the state is
+# kept here in Home Assistant. The card can then ask "what is playing?"
+# after a page reload and restore the button, instead of pushing the same
+# track a second time.
+_STATE: dict[str, dict] = {}
 
 
 def _lock(stream: str) -> asyncio.Lock:
@@ -218,6 +231,40 @@ class Speaker:
             await self._purge()
 
 
+def get_state(stream: str) -> dict | None:
+    """Return what is playing on a camera, or None when it is idle."""
+    state = _STATE.get(stream)
+    if not state:
+        return None
+    return dict(state)
+
+
+def get_all_states() -> dict:
+    """Return the playback state of every camera that plays something."""
+    return {name: dict(state) for name, state in _STATE.items()}
+
+
+def _set_state(stream: str, url: str, title: str | None, content_id: str | None) -> None:
+    """Remember that a camera started playing a track.
+
+    The original media id is stored next to the resolved URL: the
+    resolved URL carries a signature that is regenerated on every
+    resolve, so it cannot be used to recognise "the same track".
+    """
+    _STATE[stream] = {
+        "stream": stream,
+        "url": url,
+        "content_id": content_id or url,
+        "title": title or url.rsplit("/", 1)[-1] or stream,
+        "started_at": time.time(),
+    }
+
+
+def _clear_state(stream: str) -> None:
+    """Forget the playback state of a camera."""
+    _STATE.pop(stream, None)
+
+
 async def async_play_media(call: ServiceCall) -> None:
     """Handle the webrtc_mic.play_media service."""
     hass = call.hass
@@ -225,9 +272,46 @@ async def async_play_media(call: ServiceCall) -> None:
     audio = call.data.get("audio") or DEFAULT_AUDIO
 
     url = await async_resolve_url(hass, call.data["media_content_id"])
+    title = call.data.get("title")
+    # The stable id of the track. The card sends the original media id
+    # here, because the resolved URL is signed and changes every time.
+    content_id = call.data.get("source_id") or call.data["media_content_id"]
+
+    # Playing the same track again must not restart it. A page reload
+    # makes the card ask for the same track again, and a second push
+    # would start the music from the beginning.
+    #
+    # The media id is compared, not the resolved URL: the resolved URL
+    # carries a signature that is regenerated on every resolve, so two
+    # resolves of the same file never match.
+    state = _STATE.get(stream)
+    if (
+        state
+        and state.get("content_id") == content_id
+        and await async_is_playing(call.hass, stream)
+    ):
+        _LOGGER.debug("Already playing %s on %s, keeping it", title or url, stream)
+        return
+
     await Speaker(hass, stream, audio).async_play(url)
+    _set_state(stream, url, title, content_id)
 
 
 async def async_stop_media(call: ServiceCall) -> None:
     """Handle the webrtc_mic.stop_media service."""
     await Speaker(call.hass, call.data["stream"]).async_stop()
+    _clear_state(call.data["stream"])
+
+
+async def async_is_playing(hass: HomeAssistant, stream: str) -> bool:
+    """Whether go2rtc currently pushes an audio source to this camera."""
+    try:
+        r = await async_get_clientsession(hass).get(
+            utils.api_streams(hass), params={"src": stream}, timeout=6
+        )
+        if not r.ok:
+            return False
+        resp = await r.json(content_type=None)
+    except Exception:  # noqa: BLE001
+        return False
+    return any(p.get("format_name") == "wav" for p in resp.get("producers") or [])

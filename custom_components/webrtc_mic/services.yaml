@@ -74,6 +74,14 @@ play_media:
       example: Song Title
       selector:
         text:
+    source_id:
+      example: media-source://media_source/local/song.mp3
+      selector:
+        text:
+      description: >-
+        The original media id of the track. The resolved URL is signed and
+        changes on every resolve, so this is what tells the integration that
+        the same track is requested again and must not be restarted.
     audio:
       default: pcma
       selector:
