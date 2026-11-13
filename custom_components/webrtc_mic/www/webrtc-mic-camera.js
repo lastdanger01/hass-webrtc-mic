@@ -1,5 +1,5 @@
 /** Chrome 63+, Safari 11.1+ */
-import {VideoRTC} from './video-rtc.js?v=1.9.18-mic5';
+import {VideoRTC} from './video-rtc.js?v=1.9.19-mic6';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 
 class WebRTCCamera extends VideoRTC {
@@ -686,30 +686,37 @@ class WebRTCCamera extends VideoRTC {
                 video.requestPictureInPicture().catch(console.warn);
             } else if (icon === 'mdi:rectangle') {
                 document.exitPictureInPicture().catch(console.warn);
-            } else if (icon === 'mdi:microphone-off') {
-                mic.icon = 'mdi:microphone';
-                mic.classList.add('active');
-                // a click is a user gesture: restore sound blocked by autoplay policy
-                this.unmuteAutoplay();
-                this.enableMicrophone().catch(err => {
-                    console.warn(err);
-                    mic.icon = 'mdi:microphone-off';
-                    mic.classList.remove('active');
-                });
-            } else if (icon === 'mdi:microphone') {
-                // Turn the microphone off again.
+            } else if (icon === 'mdi:microphone-off' || icon === 'mdi:microphone') {
+                // Toggle the microphone.
                 //
-                // Without this branch the button could only ever switch the
-                // microphone on: clicking it while the microphone was active
-                // did nothing at all, so it looked stuck.
+                // The branch used to be keyed on the icon string only, and it
+                // only handled the "off" icon. Clicking the button while the
+                // microphone was active then did nothing at all, so it
+                // looked stuck.
+                //
+                // The real state is used now, not the icon: the icon is
+                // derived from the state, so a stale icon can never leave
+                // the microphone stuck on.
                 //
                 // The track is stopped, not just muted, so the browser stops
                 // showing the "microphone in use" indicator as well.
-                this.stopMicrophone().catch(err => {
-                    console.warn(err);
-                });
-                mic.classList.remove('active');
-                mic.icon = 'mdi:microphone-off';
+                if (this.micEnabled) {
+                    this.stopMicrophone().catch(err => {
+                        console.warn(err);
+                    });
+                    mic.classList.remove('active');
+                    mic.icon = 'mdi:microphone-off';
+                } else {
+                    mic.icon = 'mdi:microphone';
+                    mic.classList.add('active');
+                    // a click is a user gesture: restore sound blocked by autoplay policy
+                    this.unmuteAutoplay();
+                    this.enableMicrophone().catch(err => {
+                        console.warn(err);
+                        mic.icon = 'mdi:microphone-off';
+                        mic.classList.remove('active');
+                    });
+                }
             } else if (icon === 'mdi:music-note') {
                 this.toggleMusicPicker();
             } else if (icon === 'mdi:music-note-off') {

@@ -14,5 +14,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/lastdanger01/hass-webrtc-mic/issues",
   "requirements": [],
-  "version": "v1.0.28"
+  "version": "v1.0.29"
 }
