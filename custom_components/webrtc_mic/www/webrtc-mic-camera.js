@@ -143,6 +143,7 @@ class WebRTCCamera extends VideoRTC {
         this.renderDigitalPTZ();
         this.renderPTZ();
         this.renderCustomUI();
+        this.renderMusic();
         this.renderShortcuts();
         this.renderStyle();
     }
@@ -521,6 +522,60 @@ class WebRTCCamera extends VideoRTC {
                 .viewers.busy {
                     opacity: 0.5;
                 }
+                .music {
+                    display: none;
+                    color: white;
+                }
+                .music.playing {
+                    color: #00c853;
+                }
+                .music-picker {
+                    position: absolute;
+                    left: 5px;
+                    right: 5px;
+                    bottom: 40px;
+                    max-height: 60%;
+                    overflow-y: auto;
+                    background: rgba(0, 0, 0, 0.85);
+                    border-radius: 8px;
+                    padding: 6px 0;
+                    display: none;
+                    z-index: 5;
+                }
+                .music-picker.open {
+                    display: block;
+                }
+                .music-picker .item {
+                    display: block;
+                    width: 100%;
+                    text-align: left;
+                    padding: 8px 12px;
+                    color: white;
+                    font-size: 15px;
+                    background: none;
+                    border: none;
+                    cursor: pointer;
+                    font-family: inherit;
+                }
+                .music-picker .item:hover {
+                    background: rgba(255, 255, 255, 0.15);
+                }
+                .music-picker .head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 4px 12px 8px 12px;
+                    color: #b0b0b0;
+                    font-size: 13px;
+                }
+                .music-picker .head ha-icon {
+                    color: #b0b0b0;
+                }
+                .music-picker .empty {
+                    padding: 8px 12px;
+                    color: #b0b0b0;
+                    font-size: 14px;
+                }
             </style>
         `);
         card.insertAdjacentHTML('beforeend', `
@@ -537,6 +592,7 @@ class WebRTCCamera extends VideoRTC {
                         <ha-icon icon="mdi:account-multiple"></ha-icon>
                         <span class="count"></span>
                     </span>
+                    <ha-icon class="music" icon="mdi:music-note"></ha-icon>
                 <ha-icon class="play" icon="mdi:play"></ha-icon>
                     <ha-icon class="volume" icon="mdi:volume-high"></ha-icon>
                 </div>
@@ -627,10 +683,10 @@ class WebRTCCamera extends VideoRTC {
                     mic.icon = 'mdi:microphone-off';
                     mic.classList.remove('active');
                 });
-            } else if (icon === 'mdi:microphone') {
-                this.disableMicrophone().catch(console.warn);
-                mic.classList.remove('active');
-                mic.icon = 'mdi:microphone-off';
+            } else if (icon === 'mdi:music-note') {
+                this.toggleMusicPicker();
+            } else if (icon === 'mdi:music-note-off') {
+                this.stopMusic().catch(console.warn);
             } else if (ev.target.className === 'stream') {
                 this.nextStream(true);
                 ev.target.innerText = this.streamName;
@@ -707,6 +763,165 @@ class WebRTCCamera extends VideoRTC {
                 shortcuts.innerHTML = innerHTML;
             }
         });
+    }
+
+    /**
+     * Add a music button to the control bar.
+     *
+     * Pressing it opens a list of the media files in the Home Assistant
+     * media library; picking one pushes it to this camera's speaker.
+     * The media_player that talks to this camera is found by matching the
+     * card's stream name against the unique_id of the media_player
+     * entities (the upstream webrtc integration uses the go2rtc stream
+     * name as the unique_id).
+     */
+    renderMusic() {
+        if (this.config.music === false) return;
+
+        const btn = this.querySelector('.music');
+        if (!btn) return;
+
+        const ui = this.querySelector('.ui');
+        if (!ui) return;
+
+        const picker = document.createElement('div');
+        picker.className = 'music-picker';
+        picker.innerHTML = `
+            <div class="head">
+                <span>播放媒體到這台相機</span>
+                <ha-icon icon="mdi:close"></ha-icon>
+            </div>
+            <div class="list"></div>
+        `;
+        ui.appendChild(picker);
+
+        // Clicks inside the picker must not reach the control bar handler.
+        picker.addEventListener('click', ev => ev.stopPropagation());
+        picker.querySelector('ha-icon').addEventListener('click', ev => {
+            ev.stopPropagation();
+            picker.classList.remove('open');
+        });
+
+        this.musicPicker = picker;
+        btn.style.display = 'block';
+    }
+
+    /** The go2rtc stream name this card shows. */
+    get streamKey() {
+        const url = this.config.url || '';
+        // The card accepts a stream name or an entity id. Only a bare name
+        // can be matched against the media_player unique_ids.
+        return url.indexOf('://') < 0 && url.indexOf('.') < 0 ? url : '';
+    }
+
+    /** Find the media_player that pushes audio to this camera. */
+    async musicPlayer() {
+        if (this.config.music_player) return this.config.music_player;
+        if (this._musicPlayer) return this._musicPlayer;
+
+        const key = this.streamKey;
+        if (!key || !this.hass) return null;
+
+        let entries;
+        try {
+            entries = await this.hass.callWS({type: 'config/entity_registry/list'});
+        } catch (err) {
+            console.debug(err);
+            return null;
+        }
+
+        for (const entry of entries || []) {
+            if (entry.platform === 'webrtc' && entry.unique_id === key) {
+                this._musicPlayer = entry.entity_id;
+                return this._musicPlayer;
+            }
+        }
+        return null;
+    }
+
+    toggleMusicPicker() {
+        const picker = this.musicPicker;
+        if (!picker) return;
+        if (picker.classList.contains('open')) {
+            picker.classList.remove('open');
+            return;
+        }
+        this.loadMusicList();
+        picker.classList.add('open');
+    }
+
+    async loadMusicList() {
+        const picker = this.musicPicker;
+        if (!picker) return;
+        const list = picker.querySelector('.list');
+        list.innerHTML = '<div class="empty">載入中…</div>';
+
+        if (!this.hass) return;
+        try {
+            const res = await this.hass.callWS({
+                type: 'media_source/browse_media',
+                media_content_id: 'media-source://media_source/local',
+            });
+            const items = (res && res.children ? res.children : []).filter(i => i.can_play !== false);
+            if (!items.length) {
+                list.innerHTML = '<div class="empty">沒有可播放的媒體</div>';
+                return;
+            }
+            list.innerHTML = '';
+            for (const item of items) {
+                const btn = document.createElement('button');
+                btn.className = 'item';
+                btn.textContent = item.title;
+                btn.addEventListener('click', ev => {
+                    ev.stopPropagation();
+                    this.playMusic(item);
+                });
+                list.appendChild(btn);
+            }
+        } catch (err) {
+            console.debug(err);
+            list.innerHTML = '<div class="empty">取不到媒體清單</div>';
+        }
+    }
+
+    async playMusic(item) {
+        const player = await this.musicPlayer();
+        if (!player) {
+            console.warn('No media_player found for stream', this.streamKey);
+            return;
+        }
+        try {
+            await this.hass.callService('media_player', 'play_media', {
+                entity_id: player,
+                media_content_id: item.media_content_id,
+                media_content_type: 'music',
+            });
+            const btn = this.querySelector('.music');
+            if (btn) {
+                btn.icon = 'mdi:music-note-off';
+                btn.classList.add('playing');
+                btn.title = '停止播放';
+            }
+            if (this.musicPicker) this.musicPicker.classList.remove('open');
+        } catch (err) {
+            console.warn(err);
+        }
+    }
+
+    async stopMusic() {
+        const player = await this.musicPlayer();
+        const btn = this.querySelector('.music');
+        if (btn) {
+            btn.icon = 'mdi:music-note';
+            btn.classList.remove('playing');
+            btn.title = '播放媒體到這台相機';
+        }
+        if (!player) return;
+        try {
+            await this.hass.callService('media_player', 'media_stop', {entity_id: player});
+        } catch (err) {
+            console.warn(err);
+        }
     }
 
     /**
