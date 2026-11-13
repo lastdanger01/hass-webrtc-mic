@@ -133,13 +133,29 @@ echo
 echo "[4] 安裝 webrtc_mic..."
 STAMP=$(date +%Y%m%d-%H%M%S)
 if [ -d "$CC/webrtc_mic" ]; then
-    cp -a "$CC/webrtc_mic" "$CC/webrtc_mic.bak-$STAMP"
-    echo "    已備份 → webrtc_mic.bak-$STAMP"
+    # The backup MUST NOT stay inside custom_components/ - Home Assistant
+    # treats every subdirectory that contains a manifest.json as a custom
+    # integration and tries to import it. A leftover "webrtc_mic.bak-..."
+    # made HA fail with:
+    #   Unable to import component: No module named
+    #   'custom_components.webrtc_mic.bak-20261113-131527'
+    # which took the whole integration down (no card, no services).
+    # Keep the backup next to custom_components/ instead.
+    BAK="$(dirname "$CC")/webrtc_mic.bak-$STAMP"
+    rm -rf "$BAK"
+    cp -a "$CC/webrtc_mic" "$BAK"
+    echo "    已備份 → $BAK"
     rm -rf "$CC/webrtc_mic"
 fi
 unzip -q "$WORK/$ZIP" -d "$(dirname "$CC")"
 # HACS 不會產生 .gz，但萬一有先清掉：伺服器優先送 .gz 的話瀏覽器會拿到舊檔
 find "$CC/webrtc_mic" -name '*.gz' -delete 2>/dev/null || true
+# Also clean up any stale backup directories left inside custom_components by
+# older versions of this installer - they break the integration on restart.
+for d in "$(dirname "$CC")"/webrtc_mic.bak-*; do
+    [ -d "$d" ] || continue
+    rm -rf "$d" && echo "    已清除舊備份 $(basename "$d")"
+done
 echo "    OK → $CC/webrtc_mic"
 echo
 
