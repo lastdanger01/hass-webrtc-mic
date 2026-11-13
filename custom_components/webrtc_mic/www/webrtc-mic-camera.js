@@ -814,7 +814,14 @@ class WebRTCCamera extends VideoRTC {
         return url.indexOf('://') < 0 && url.indexOf('.') < 0 ? url : '';
     }
 
-    /** Find the media_player that pushes audio to this camera. */
+    /**
+     * Find the media_player that pushes audio to this camera.
+     *
+     * The media_player can come from the upstream `webrtc` integration or
+     * from this fork's own `webrtc_mic` platform - both use the go2rtc
+     * stream name as the unique_id, so match on the unique_id and accept
+     * either platform.
+     */
     async musicPlayer() {
         if (this.config.music_player) return this.config.music_player;
         if (this._musicPlayer) return this._musicPlayer;
@@ -831,12 +838,21 @@ class WebRTCCamera extends VideoRTC {
         }
 
         for (const entry of entries || []) {
-            if (entry.platform === 'webrtc' && entry.unique_id === key) {
-                this._musicPlayer = entry.entity_id;
-                return this._musicPlayer;
-            }
+            if (entry.unique_id !== key) continue;
+            if (entry.platform !== 'webrtc' && entry.platform !== 'webrtc_mic') continue;
+            this._musicPlayer = entry.entity_id;
+            return this._musicPlayer;
         }
         return null;
+    }
+
+    /** Show a message inside the picker, so failures are not silent. */
+    musicError(message) {
+        const picker = this.musicPicker;
+        if (!picker) return;
+        const list = picker.querySelector('.list');
+        if (list) list.innerHTML = `<div class="empty">${message}</div>`;
+        picker.classList.add('open');
     }
 
     toggleMusicPicker() {
@@ -888,6 +904,7 @@ class WebRTCCamera extends VideoRTC {
         const player = await this.musicPlayer();
         if (!player) {
             console.warn('No media_player found for stream', this.streamKey);
+            this.musicError(`找不到這台相機的對講喇叭（stream: ${this.streamKey || '?'}）`);
             return;
         }
         try {
@@ -905,6 +922,14 @@ class WebRTCCamera extends VideoRTC {
             if (this.musicPicker) this.musicPicker.classList.remove('open');
         } catch (err) {
             console.warn(err);
+            const message = (err && err.message) || String(err);
+            this.musicError(`播放失敗：${message}`);
+            const btn = this.querySelector('.music');
+            if (btn) {
+                btn.icon = 'mdi:music-note';
+                btn.classList.remove('playing');
+                btn.title = '播放媒體到這台相機';
+            }
         }
     }
 
