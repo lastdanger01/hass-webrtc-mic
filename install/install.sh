@@ -4,7 +4,7 @@
 # 在 Home Assistant 主機上執行（HA OS 用 Terminal & SSH add-on，
 # Supervised / Container 用 ssh 進去跑）：
 #
-#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.20/install/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/lastdanger01/hass-webrtc-mic/v1.0.21/install/install.sh | sudo bash
 #
 # 這一支腳本一次做完所有事：
 #
@@ -21,7 +21,7 @@
 #   url: tapo44
 #
 # 環境變數：
-#   TAG=v1.0.20          指定版本（不指定＝自動取最新 release）
+#   TAG=v1.0.21          指定版本（不指定＝自動取最新 release）
 #   WITH_UPSTREAM_PATCH=1 同時 patch 上游 webrtc 整合
 #   RESTART_HA=0         跳過重啟 HA
 set -u
@@ -47,7 +47,7 @@ fi
 if [ -z "$TAG" ]; then
     echo "[錯誤] 無法確定要安裝的版本（拿不到 release 資訊）。" >&2
     echo "       請改用指定版本：" >&2
-    echo "       TAG=v1.0.20 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.20/install/install.sh | sudo bash" >&2
+    echo "       TAG=v1.0.21 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.21/install/install.sh | sudo bash" >&2
     exit 1
 fi
 
@@ -103,13 +103,49 @@ echo "    $CC"
 echo
 
 # ------------------------------------------------- 2. 下載
+# 三段 fallback。release asset 是首選，但有些 release 只帶 source tarball、
+# 沒上傳 webrtc_mic.zip asset（v1.0.18/19/20 就是這樣），
+# 那時直接抓 asset 會 404，腳本就在這裡 exit 1 —— 使用者拿到的是
+# 「下載失敗」而不是可用的安裝指令。
 echo "[2] 下載 $ZIP ..."
+
+GOT="$WORK/$ZIP"
+
+# 2a. release asset
 URL="https://github.com/$REPO/releases/download/$TAG/$ZIP"
-if ! fetch "$URL" "$WORK/$ZIP" 2>/dev/null || [ ! -s "$WORK/$ZIP" ]; then
-    echo "    [錯誤] 下載失敗：$URL" >&2
+if fetch "$URL" "$GOT" 2>/dev/null && [ -s "$GOT" ]; then
+    echo "    OK  release asset ($(wc -c < "$GOT") bytes)"
+else
+    echo "    release asset 沒有 $ZIP，改用 raw ..."
+
+    # 2b. repo 根目錄的 zip（每個 tag 都追蹤了同一份檔案）
+    URL="https://raw.githubusercontent.com/$REPO/$TAG/$ZIP"
+    if fetch "$URL" "$GOT" 2>/dev/null && [ -s "$GOT" ]; then
+        echo "    OK  raw tag ($TAG) ($(wc -c < "$GOT") bytes)"
+    else
+        echo "    raw 也沒有，改用 source tarball ..."
+
+        # 2c. source tarball 裡的 zip
+        URL="https://api.github.com/repos/$REPO/tarball/$TAG"
+        TARBALL="$WORK/src.tar.gz"
+        if fetch "$URL" "$TARBALL" 2>/dev/null && [ -s "$TARBALL" ]; then
+            if command -v tar >/dev/null 2>&1 && tar xzf "$TARBALL" -C "$WORK" 2>/dev/null; then
+                FOUND=$(find "$WORK" -name "$ZIP" -type f 2>/dev/null | head -1)
+                if [ -n "$FOUND" ]; then
+                    cp "$FOUND" "$GOT"
+                    echo "    OK  source tarball ($(wc -c < "$GOT") bytes)"
+                fi
+            fi
+        fi
+    fi
+fi
+
+if [ ! -s "$GOT" ]; then
+    echo "    [錯誤] 下載失敗：$REPO 的 $TAG 沒有可用的 $ZIP" >&2
+    echo "           請改用有 asset 的版本：" >&2
+    echo "           TAG=v1.0.17 curl -sSL https://raw.githubusercontent.com/$REPO/v1.0.17/install/install.sh | sudo bash" >&2
     exit 1
 fi
-echo "    OK ($(wc -c < "$WORK/$ZIP") bytes)"
 echo
 
 # ------------------------------------------------- 3. 檢查 zip 結構
