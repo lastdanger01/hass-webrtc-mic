@@ -900,6 +900,42 @@ class WebRTCCamera extends VideoRTC {
         }
     }
 
+    /**
+     * Turn a media library entry into a URL that go2rtc can fetch.
+     *
+     * Home Assistant signs the media URLs it hands out: the signature is
+     * bound to the client that asked for it. go2rtc runs on another host,
+     * so a signed URL would make it fail. Resolving the media here and
+     * passing the absolute, signed URL on avoids that - the signature is
+     * valid for the URL itself, no matter who requests it.
+     */
+    async musicMediaUrl(item) {
+        const contentId = item.media_content_id || '';
+        if (!contentId.startsWith('media-source://')) return contentId;
+
+        let resolved;
+        try {
+            resolved = await this.hass.callWS({
+                type: 'media_source/resolve_media',
+                media_content_id: contentId,
+            });
+        } catch (err) {
+            console.debug(err);
+            return contentId;
+        }
+
+        const url = resolved && resolved.url;
+        if (!url) return contentId;
+
+        // The resolved URL is relative to the Home Assistant origin.
+        const base = (this.hass && this.hass.hassUrl) || document.location.origin;
+        try {
+            return new URL(url, base).href;
+        } catch (err) {
+            return url;
+        }
+    }
+
     async playMusic(item) {
         const player = await this.musicPlayer();
         if (!player) {
@@ -908,9 +944,10 @@ class WebRTCCamera extends VideoRTC {
             return;
         }
         try {
+            const mediaUrl = await this.musicMediaUrl(item);
             await this.hass.callService('media_player', 'play_media', {
                 entity_id: player,
-                media_content_id: item.media_content_id,
+                media_content_id: mediaUrl,
                 media_content_type: 'music',
             });
             const btn = this.querySelector('.music');
