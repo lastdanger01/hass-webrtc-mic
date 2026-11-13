@@ -16,6 +16,14 @@ import jwt
 import requests
 from aiohttp import web
 from homeassistant.components.frontend import add_extra_js_url
+
+try:
+    # Only available since Home Assistant 2024.12. Older versions cannot
+    # remove an extra module url, but they also never add one twice,
+    # because the url changes with every version.
+    from homeassistant.components.frontend import remove_extra_js_url
+except ImportError:  # pragma: no cover - depends on the HA version
+    remove_extra_js_url = None
 from homeassistant.components.http.auth import DATA_SIGN_SECRET, SIGN_QUERY_PARAM
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.const import CONF_URL, MAJOR_VERSION, MINOR_VERSION
@@ -26,6 +34,11 @@ from homeassistant.helpers.entity_component import DATA_INSTANCES
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "webrtc_mic"
+
+# Key in hass.data that holds the extra module urls we registered with
+# the frontend, so an older version of our own module can be replaced
+# instead of loading it twice.
+DATA_EXTRA_MODULES = "webrtc_mic_extra_modules"
 
 BINARY_VERSION = "1.9.12"
 
@@ -122,50 +135,135 @@ async def register_static_path(hass: HomeAssistant, url_path: str, path: str):
         hass.http.register_static_path(url_path, path)
 
 
-async def init_resource(hass: HomeAssistant, url: str, ver: str) -> bool:
-    """Add extra JS module for lovelace mode YAML and new lovelace resource
-    for mode GUI. It's better to add extra JS for all modes, because it has
-    random url to avoid problems with the cache. But chromecast don't support
-    extra JS urls and can't load custom card.
+def _lovelace_resources(hass: HomeAssistant):
+    """Return the Lovelace resource collection, whatever shape it has.
+
+    Home Assistant changed the shape of ``hass.data["lovelace"]`` over
+    time: it used to be a dict, newer versions use a dataclass. Both are
+    supported here, and a missing Lovelace returns None instead of
+    raising, so a not-yet-ready Lovelace cannot break the setup.
     """
-    lovelace = hass.data["lovelace"]
-    resources: ResourceStorageCollection = (
-        lovelace.resources if hasattr(lovelace, "resources") else lovelace["resources"]
-    )
+    lovelace = hass.data.get("lovelace")
+    if lovelace is None:
+        return None
+    if hasattr(lovelace, "resources"):
+        return lovelace.resources
+    if isinstance(lovelace, dict):
+        return lovelace.get("resources")
+    return None
 
-    # force load storage
-    await resources.async_get_info()
 
-    url2 = f"{url}?v={ver}"
+def _add_extra_module(hass: HomeAssistant, url: str) -> None:
+    """Register the card module with the frontend, replacing older versions.
 
-    for item in resources.async_items():
-        if not item.get("url", "").startswith(url):
+    The frontend loads ``extra_module_url`` modules straight into the
+    index page. That works in every Lovelace mode, so it is used as a
+    safety net next to the Lovelace resource itself.
+
+    Only the newest version of our own module is kept: two different
+    urls for the same file would load the module twice.
+    """
+    known = hass.data.setdefault(DATA_EXTRA_MODULES, set())
+    base = url.split("?")[0]
+
+    for old in list(known):
+        if old == url or old.split("?")[0] != base:
             continue
+        if remove_extra_js_url is not None:
+            try:
+                remove_extra_js_url(hass, old)
+            except Exception:  # noqa: BLE001 - never break the setup
+                _LOGGER.debug("Could not remove old module url %s", old)
+        known.discard(old)
 
-        # no need to update
-        if item["url"].endswith(ver):
-            return False
+    try:
+        add_extra_js_url(hass, url)
+    except KeyError:
+        # The frontend integration is not set up (yet).
+        _LOGGER.debug("Frontend not ready, skipping extra module url %s", url)
+        return
+    except Exception:  # noqa: BLE001 - never break the setup
+        _LOGGER.exception("Could not register extra module url %s", url)
+        return
 
-        _LOGGER.debug(f"Update lovelace resource to: {url2}")
+    known.add(url)
 
-        if isinstance(resources, ResourceStorageCollection):
-            await resources.async_update_item(
-                item["id"], {"res_type": "module", "url": url2}
-            )
-        else:
-            # not the best solution, but what else can we do
-            item["url"] = url2
 
-        return True
+async def init_resource(hass: HomeAssistant, url: str, ver: str) -> bool:
+    """Make the Lovelace frontend load the card module.
 
-    if isinstance(resources, ResourceStorageCollection):
-        _LOGGER.debug(f"Add new lovelace resource: {url2}")
-        await resources.async_create_item({"res_type": "module", "url": url2})
+    The module has to reach the browser through two different channels,
+    because which one is used depends on how Lovelace is set up:
+
+    - a Lovelace resource of type ``module`` (storage mode)
+    - ``extra_module_url`` in the frontend (YAML mode, and as a safety
+      net in storage mode)
+
+    Registering only one of them is what made the card missing on some
+    installs: the JS file was served fine (HTTP 200) but the frontend
+    never loaded it, so the browser only said
+    "Custom element doesn't exist: webrtc-mic-camera".
+
+    Both channels are always used now, and a failure is logged instead
+    of being swallowed.
+    """
+    url2 = f"{url}?v={ver}"
+    changed = False
+
+    resources = _lovelace_resources(hass)
+
+    if resources is None:
+        _LOGGER.warning(
+            "Lovelace is not set up yet, the card module is only registered "
+            "as an extra module url for now"
+        )
     else:
-        _LOGGER.debug(f"Add extra JS module: {url2}")
-        add_extra_js_url(hass, url2)
+        try:
+            # force load storage
+            await resources.async_get_info()
 
-    return True
+            existing = None
+            for item in resources.async_items():
+                if item.get("url", "").startswith(url):
+                    existing = item
+                    break
+
+            # Duck typing instead of isinstance: the class of the
+            # collection changed between Home Assistant versions, but a
+            # writable collection always has these two methods.
+            writable = hasattr(resources, "async_create_item") and hasattr(
+                resources, "async_update_item"
+            )
+
+            if existing is not None:
+                if existing.get("url", "").endswith(ver) and existing.get(
+                    "res_type"
+                ) == "module":
+                    pass  # already up to date
+                else:
+                    _LOGGER.debug(f"Update lovelace resource to: {url2}")
+                    if writable:
+                        await resources.async_update_item(
+                            existing["id"], {"res_type": "module", "url": url2}
+                        )
+                    else:
+                        # not the best solution, but what else can we do
+                        existing["url"] = url2
+                    changed = True
+            elif writable:
+                _LOGGER.debug(f"Add new lovelace resource: {url2}")
+                await resources.async_create_item({"res_type": "module", "url": url2})
+                changed = True
+            else:
+                # YAML mode: the frontend gets the module from the
+                # configuration, so nothing to store here.
+                _LOGGER.debug("Lovelace runs in YAML mode, using extra module url")
+        except Exception:  # noqa: BLE001 - never break the setup
+            _LOGGER.exception("Could not register the lovelace resource %s", url2)
+
+    _add_extra_module(hass, url2)
+
+    return changed
 
 
 # noinspection PyProtectedMember

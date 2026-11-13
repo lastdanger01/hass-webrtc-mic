@@ -86,3 +86,10 @@ stop_media:
       required: true
       selector:
         text:
+
+reload_card:
+  fields: {}
+  description: >-
+    Register the card module with the Lovelace frontend again. Use this when
+    the card shows "Custom element doesn't exist: webrtc-mic-camera". Reload
+    the browser after calling it.

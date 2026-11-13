@@ -94,17 +94,15 @@ async def async_setup(hass: HomeAssistant, config: dict):
         url = await utils.detect_go2rtc(hass) or utils.DEFAULT_URL
     hass.data[DOMAIN] = url
 
-    # 1. Serve lovelace card
-    path = Path(__file__).parent / "www"
-    for name in ("video-rtc.js", "webrtc-mic-camera.js", "digital-ptz.js"):
-        await utils.register_static_path(hass, "/webrtc_mic/" + name, str(path / name))
-
-    # 2. Add card to resources
-    version = getattr(hass.data["integrations"][DOMAIN], "version", 0)
-    await utils.init_resource(hass, "/webrtc_mic/webrtc-mic-camera.js", str(version))
+    # 1. Serve lovelace card and register it with the frontend.
+    #    This is done here and in async_setup_entry, so the card is
+    #    available no matter how the integration was installed.
+    await _async_register_card(hass)
 
     # 3. Serve html page
-    await utils.register_static_path(hass, "/webrtc_mic/embed", str(path / "embed.html"))
+    await utils.register_static_path(
+        hass, "/webrtc_mic/embed", str(Path(__file__).parent / "www" / "embed.html")
+    )
 
     # 4. Serve WebSocket API
     hass.http.register_view(WebSocketView)
@@ -161,7 +159,42 @@ async def async_setup(hass: HomeAssistant, config: dict):
     # configuration, so a camera can play music right away.
     _register_speaker_services(hass)
 
+    # 8. Repair service: re-register the card and re-add the services.
+    #
+    # This exists so a broken install can be fixed without editing any
+    # file by hand - just call the service and reload the browser.
+    async def reload_card(call: ServiceCall):
+        """Register the card module and the speaker services again."""
+        await _async_register_card(hass)
+        _register_speaker_services(hass)
+        _LOGGER.info("The webrtc_mic card was registered again, reload the browser")
+
+    hass.services.async_register(DOMAIN, "reload_card", reload_card, vol.Schema({}))
+
     return True
+
+
+async def _async_register_card(hass: HomeAssistant) -> None:
+    """Serve the card files and make the Lovelace frontend load them.
+
+    This used to run only in the YAML setup. An install through HACS or
+    the UI never calls that, so on those installs the card module was
+    never registered and the browser only showed
+    "Custom element doesn't exist: webrtc-mic-camera".
+    """
+    path = Path(__file__).parent / "www"
+    for name in ("video-rtc.js", "webrtc-mic-camera.js", "digital-ptz.js"):
+        await utils.register_static_path(hass, "/webrtc_mic/" + name, str(path / name))
+
+    version = _integration_version(hass)
+    await utils.init_resource(hass, "/webrtc_mic/webrtc-mic-camera.js", str(version))
+
+
+def _integration_version(hass: HomeAssistant) -> str:
+    """Return the version of this integration, as a string."""
+    integrations = hass.data.get("integrations") or {}
+    integration = integrations.get(DOMAIN)
+    return str(getattr(integration, "version", 0) or 0)
 
 
 def _register_speaker_services(hass: HomeAssistant) -> None:
@@ -183,6 +216,13 @@ def _register_speaker_services(hass: HomeAssistant) -> None:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # 0. Make sure the speaker services are there after a reload.
     _register_speaker_services(hass)
+
+    # 0b. Register the card with the Lovelace frontend.
+    #
+    # An install through HACS or the UI only calls async_setup_entry, so
+    # this is where the card has to be registered. Without it the browser
+    # shows "Custom element doesn't exist: webrtc-mic-camera".
+    await _async_register_card(hass)
 
     # 1. If user set custom url
     go_url = entry.data.get(CONF_URL)

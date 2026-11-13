@@ -1138,8 +1138,8 @@ class WebRTCCamera extends VideoRTC {
 customElements.define('webrtc-mic-camera', WebRTCCamera);
 
 const card = {
-    type: 'webrtc-camera',
-    name: 'WebRTC Camera',
+    type: 'webrtc-mic-camera',
+    name: 'WebRTC Camera with Microphone',
     preview: false,
     description: 'WebRTC camera allows you to view the stream of almost any camera without delay',
 };
