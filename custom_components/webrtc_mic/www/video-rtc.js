@@ -200,8 +200,8 @@ export class VideoRTC extends HTMLElement {
         // Keep config.media in sync as well. nextStream() resets
         // `this.media` from `this.config.media`, so without this the
         // microphone would be dropped again when the user switches streams.
-        if (!this.config.media || !this.config.media.includes('microphone')) {
-            this.config.media = this.media;
+        if (!this.config || !this.config.media || !this.config.media.includes('microphone')) {
+            if (this.config) this.config.media = this.media;
         }
         this.ondisconnect();
         setTimeout(() => this.onconnect(), 100);
@@ -214,6 +214,51 @@ export class VideoRTC extends HTMLElement {
     async disableMicrophone() {
         this.micEnabled = false;
         if (this.micTrack) this.micTrack.enabled = false;
+    }
+
+    /**
+     * Stop the microphone completely.
+     *
+     * Disabling the microphone only mutes the track, so the browser keeps
+     * showing the "microphone in use" indicator and the track stays open.
+     * The track has to be stopped for that to go away.
+     * @return {Promise<void>}
+     */
+    async stopMicrophone() {
+        this.micEnabled = false;
+
+        if (this.micTrack) {
+            this.micTrack.enabled = false;
+            try {
+                this.micTrack.stop();
+            } catch (e) {
+                console.warn(e);
+            }
+            this.micTrack = null;
+        }
+
+        if (this.micStream) {
+            // Not every stream object has getTracks(): some browsers and
+            // test doubles only expose the individual tracks.
+            const tracks = typeof this.micStream.getTracks === 'function'
+                ? this.micStream.getTracks()
+                : [];
+            tracks.forEach(track => {
+                try {
+                    track.stop();
+                } catch (e) {
+                    console.warn(e);
+                }
+            });
+            this.micStream = null;
+        }
+
+        if (this.media && this.media.includes('microphone')) {
+            this.media = this.media.replace(',microphone', '');
+        }
+        if (this.config && this.config.media && this.config.media.includes('microphone')) {
+            this.config.media = this.config.media.replace(',microphone', '');
+        }
     }
 
     /**
@@ -327,6 +372,14 @@ export class VideoRTC extends HTMLElement {
             this.disconnectTID = 0;
 
             this.ondisconnect();
+
+            // Release the microphone when the card leaves the page.
+            //
+            // ondisconnect() keeps the track on purpose: a reconnect
+            // reuses it. But when the card is really gone the track stays
+            // open, and the browser keeps showing the "microphone in use"
+            // indicator even though nobody can hear anything.
+            this.stopMicrophone().catch(err => console.warn(err));
         }, this.DISCONNECT_TIMEOUT);
     }
 

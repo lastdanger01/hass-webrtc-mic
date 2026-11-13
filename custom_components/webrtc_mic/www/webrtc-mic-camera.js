@@ -1,5 +1,5 @@
 /** Chrome 63+, Safari 11.1+ */
-import {VideoRTC} from './video-rtc.js?v=1.9.17-mic4';
+import {VideoRTC} from './video-rtc.js?v=1.9.18-mic5';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 
 class WebRTCCamera extends VideoRTC {
@@ -642,6 +642,19 @@ class WebRTCCamera extends VideoRTC {
             mic.style.display = 'block';
         }
 
+        // The control bar is rebuilt whenever the card is rendered again.
+        // The microphone button always starts in the "off" icon, so the
+        // icon has to follow the real state - otherwise a card that is
+        // re-rendered while the microphone is on looks like it can never
+        // be turned off.
+        if (this.micEnabled) {
+            mic.icon = 'mdi:microphone';
+            mic.classList.add('active');
+        } else {
+            mic.icon = 'mdi:microphone-off';
+            mic.classList.remove('active');
+        }
+
         // Show how many people are watching the cameras. The count lives in
         // the control bar next to the microphone, so it has to be fetched
         // from the same origin as the dashboard - the browser cannot reach
@@ -683,6 +696,20 @@ class WebRTCCamera extends VideoRTC {
                     mic.icon = 'mdi:microphone-off';
                     mic.classList.remove('active');
                 });
+            } else if (icon === 'mdi:microphone') {
+                // Turn the microphone off again.
+                //
+                // Without this branch the button could only ever switch the
+                // microphone on: clicking it while the microphone was active
+                // did nothing at all, so it looked stuck.
+                //
+                // The track is stopped, not just muted, so the browser stops
+                // showing the "microphone in use" indicator as well.
+                this.stopMicrophone().catch(err => {
+                    console.warn(err);
+                });
+                mic.classList.remove('active');
+                mic.icon = 'mdi:microphone-off';
             } else if (icon === 'mdi:music-note') {
                 this.toggleMusicPicker();
             } else if (icon === 'mdi:music-note-off') {
