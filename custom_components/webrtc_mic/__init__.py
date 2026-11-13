@@ -111,6 +111,9 @@ async def async_setup(hass: HomeAssistant, config: dict):
     # 5. Serve HLS proxy
     hass.http.register_view(HLSView)
 
+    # 5b. Report how many people are watching the cameras
+    hass.http.register_view(ViewersView)
+
     # 6. Register webrtc.create_link and webrtc.dash_cast services:
 
     async def create_link(call: ServiceCall):
@@ -410,6 +413,67 @@ class WebSocketView(HomeAssistantView):
             await ws_server.send_json({"type": "error", "value": str(e)})
 
         return ws_server
+
+
+class ViewersView(HomeAssistantView):
+    """Report how many people are watching the cameras right now.
+
+    The card cannot query go2rtc directly: go2rtc only speaks plain HTTP and
+    this Home Assistant is reachable over HTTPS, so the browser would treat
+    the request as mixed content and block it. This view proxies the request
+    from the same origin as the dashboard.
+
+    It also needs the go2rtc instance that actually holds the streams, not
+    just the configured one - several go2rtc instances can answer HTTP at
+    the same time and most of them have no streams of their own.
+    """
+
+    url = "/api/webrtc_mic/viewers"
+    name = "api:webrtc_mic:viewers"
+    requires_auth = False
+
+    async def get(self, request: web.Request):
+        if not utils.validate_signed_request(request):
+            raise HTTPUnauthorized()
+
+        hass: HomeAssistant = request.app["hass"]
+
+        # Ask the configured instance first, then every other reachable one,
+        # and merge the result - the cameras can be spread over more than
+        # one go2rtc.
+        states: dict = {}
+        tried = []
+
+        configured = hass.data.get(DOMAIN)
+        if isinstance(configured, Server):
+            configured = "http://localhost:1984/"
+
+        candidates = []
+        if configured:
+            candidates.append(configured)
+        for url in utils.candidate_urls(hass):
+            if url not in candidates:
+                candidates.append(url)
+
+        session = async_get_clientsession(hass)
+        for url in candidates:
+            tried.append(url)
+            got = await utils.go2rtc_streams_state(hass, session=session, url=url)
+            for name, state in got.items():
+                # Keep the instance with the most consumers for a stream name.
+                old = states.get(name)
+                if old is None or len((state or {}).get("consumers") or []) > len(
+                    (old or {}).get("consumers") or []
+                ):
+                    states[name] = state
+
+            if states:
+                # One instance answered with streams - that is enough.
+                break
+
+        summary = utils.count_viewers(states)
+        summary["sources"] = tried
+        return web.json_response(summary)
 
 
 class HLSView(HomeAssistantView):

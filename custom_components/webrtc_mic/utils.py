@@ -497,6 +497,75 @@ def api_streams(hass: HomeAssistant, url: Optional[str] = None) -> str:
     return urljoin(go_url, "api/streams")
 
 
+async def go2rtc_streams_state(
+    hass: HomeAssistant, session=None, url: Optional[str] = None
+) -> dict:
+    """Return the raw go2rtc stream states.
+
+    Each stream has ``producers`` (connections to the camera) and
+    ``consumers`` (clients currently watching). A consumer carries
+    ``remote_addr`` and ``user_agent``, which is what makes it possible to
+    tell "how many people" from "how many connections".
+    """
+    try:
+        if session is None:
+            session = async_get_clientsession(hass)
+        r = await session.get(api_streams(hass, url=url), timeout=5)
+        if r.status >= 400:
+            return {}
+        streams = await r.json()
+    except Exception:
+        return {}
+
+    return streams if isinstance(streams, dict) else {}
+
+
+def count_viewers(streams: dict) -> dict:
+    """Turn raw go2rtc stream states into a viewer summary.
+
+    Two different numbers come out of the same data:
+
+    * ``connections`` - how many client connections are watching. One person
+      with two tabs produces two.
+    * ``people`` - how many distinct devices. Grouped by source IP and
+      User-Agent, so one person watching four cameras still counts once.
+    """
+    per_stream = {}
+    devices = {}
+
+    for name, state in (streams or {}).items():
+        state = state or {}
+        consumers = state.get("consumers") or []
+        producers = state.get("producers") or []
+
+        entries = []
+        for c in consumers:
+            addr = (c.get("remote_addr") or "?").rsplit(":", 1)[0]
+            ua = c.get("user_agent") or "-"
+            entries.append({"ip": addr, "ua": ua,
+                            "protocol": c.get("protocol") or c.get("format_name") or "?"})
+            devices.setdefault((addr, ua), set()).add(name)
+
+        per_stream[name] = {
+            "connections": len(consumers),
+            "producers": len(producers),
+            "viewers": entries,
+        }
+
+    people = []
+    for (addr, ua), names in sorted(devices.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        people.append({"ip": addr, "ua": ua, "streams": sorted(names)})
+
+    total_conn = sum(s["connections"] for s in per_stream.values())
+
+    return {
+        "people": len(people),
+        "connections": total_conn,
+        "devices": people,
+        "streams": per_stream,
+    }
+
+
 # copied from homeassistant.components.hassio.ingress import _websocket_forward
 async def websocket_forward(ws_from, ws_to) -> None:
     try:

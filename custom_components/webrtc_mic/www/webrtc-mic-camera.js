@@ -507,6 +507,20 @@ class WebRTCCamera extends VideoRTC {
                     display: none;
                     cursor: pointer;
                 }
+                .viewers {
+                    display: none;
+                    color: white;
+                    align-items: center;
+                    gap: 2px;
+                    padding-right: 6px;
+                    font-size: 15px;
+                }
+                .viewers .count {
+                    line-height: 1;
+                }
+                .viewers.busy {
+                    opacity: 0.5;
+                }
             </style>
         `);
         card.insertAdjacentHTML('beforeend', `
@@ -519,6 +533,10 @@ class WebRTCCamera extends VideoRTC {
                     <span class="stream">${this.streamName}</span>
                     <span class="space"></span>
                     <ha-icon class="microphone" icon="mdi:microphone-off"></ha-icon>
+                    <span class="viewers" title="目前有幾個人在看攝影機">
+                        <ha-icon icon="mdi:account-multiple"></ha-icon>
+                        <span class="count"></span>
+                    </span>
                 <ha-icon class="play" icon="mdi:play"></ha-icon>
                     <ha-icon class="volume" icon="mdi:volume-high"></ha-icon>
                 </div>
@@ -567,6 +585,12 @@ class WebRTCCamera extends VideoRTC {
         if (this.config.microphone !== false) {
             mic.style.display = 'block';
         }
+
+        // Show how many people are watching the cameras. The count lives in
+        // the control bar next to the microphone, so it has to be fetched
+        // from the same origin as the dashboard - the browser cannot reach
+        // go2rtc directly (plain HTTP under an HTTPS page = mixed content).
+        this.renderViewers();
 
         // The browser blocks autoplay with sound and silently mutes the video
         // element. Any user gesture on the card is a chance to restore sound.
@@ -683,6 +707,69 @@ class WebRTCCamera extends VideoRTC {
                 shortcuts.innerHTML = innerHTML;
             }
         });
+    }
+
+    /**
+     * Show how many people are watching the cameras right now.
+     *
+     * The endpoint lives on the Home Assistant origin, so the browser can
+     * call it without mixed-content problems. It has to be signed like the
+     * websocket endpoint - the card asks Home Assistant for a signed path
+     * and uses that.
+     */
+    renderViewers() {
+        const box = this.querySelector('.viewers');
+        if (!box) return;
+
+        const count = box.querySelector('.count');
+
+        const update = (people, connections) => {
+            box.style.display = 'flex';
+            box.classList.remove('busy');
+            count.innerText = people;
+            box.title = people === 1 ? '目前 1 個人在看' : `目前 ${people} 個人在看`;
+            if (connections !== people) {
+                box.title += `（${connections} 個連線）`;
+            }
+        };
+
+        const fail = () => {
+            box.classList.add('busy');
+            count.innerText = '-';
+            box.title = '取不到觀看人數';
+        };
+
+        if (this.config.viewers === false) {
+            box.style.display = 'none';
+            return;
+        }
+
+        const load = async () => {
+            if (!this.hass) return fail();
+            try {
+                const data = await this.hass.callWS({
+                    type: 'auth/sign_path', path: '/api/webrtc_mic/viewers'
+                });
+                const url = this.hass.hassUrl(data.path);
+                const r = await fetch(url, { credentials: 'same-origin' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const json = await r.json();
+                update(json.people | 0, json.connections | 0);
+            } catch (e) {
+                console.debug(e);
+                fail();
+            }
+        };
+
+        load();
+        // Refresh every 20 seconds, but only while the card is on screen.
+        clearInterval(this.viewersTID);
+        this.viewersTID = setInterval(() => {
+            if (!this.isConnected) return;
+            const rect = this.getBoundingClientRect();
+            const visible = rect.bottom > 0 && rect.top < (window.innerHeight || 0);
+            if (visible) load();
+        }, 20000);
     }
 
     renderStyle() {
