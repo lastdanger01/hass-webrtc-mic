@@ -1102,24 +1102,35 @@ class WebRTCCamera extends VideoRTC {
             return;
         }
 
-        try {
-            const data = await this.hass.callWS({
-                type: 'auth/sign_path', path: '/api/webrtc_mic/media_status'
-            });
-            const url = this.hass.hassUrl(data.path) + '?stream=' + encodeURIComponent(stream);
-            const r = await fetch(url, { credentials: 'same-origin' });
-            if (!r.ok) return;
+        // The page reload kills the WebRTC connection to the camera, and
+        // go2rtc stops the camera with it - the audio dies with it. Home
+        // Assistant notices that and resumes the track where it stopped.
+        // That takes a moment, so the state is asked for a few times
+        // before the button is given up on.
+        for (let attempt = 0; attempt < 6; attempt++) {
+            try {
+                const data = await this.hass.callWS({
+                    type: 'auth/sign_path', path: '/api/webrtc_mic/media_status'
+                });
+                const url = this.hass.hassUrl(data.path) + '?stream=' + encodeURIComponent(stream);
+                const r = await fetch(url, { credentials: 'same-origin' });
+                if (!r.ok) return;
 
-            const state = await r.json();
-            if (state && state.playing) {
-                btn.icon = 'mdi:music-note-off';
-                btn.classList.add('playing');
-                btn.title = state.title ? `停止播放：${state.title}` : '停止播放';
+                const state = await r.json();
+                if (state && state.playing) {
+                    btn.icon = 'mdi:music-note-off';
+                    btn.classList.add('playing');
+                    btn.title = state.title ? `停止播放：${state.title}` : '停止播放';
+                    return;
+                }
+            } catch (err) {
+                // A missing endpoint is not an error: the card still works,
+                // the button just starts in the "stopped" state.
+                console.debug(err);
+                return;
             }
-        } catch (err) {
-            // A missing endpoint is not an error: the card still works, the
-            // button just starts in the "stopped" state.
-            console.debug(err);
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
     }
 

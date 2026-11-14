@@ -47,6 +47,19 @@ PCMA_BYTES_PER_SECOND = 8000
 # How often the position of a playing track is checked.
 POLL_INTERVAL = 2.0
 
+# How many times an interrupted track is resumed automatically.
+#
+# The page was reloaded - or the Home Assistant app was updated - and the
+# browser dropped the WebRTC connection to the camera. go2rtc stops the
+# camera with it, and the audio that was pushed through the backchannel
+# dies with it. The track is then resumed where it stopped, so the music
+# keeps playing even though nobody is looking at the dashboard.
+RESUME_ATTEMPTS = 4
+
+# Seconds between the resume attempts. The camera needs a moment to come
+# back after the browser reconnected.
+RESUME_DELAY = 4.0
+
 PLAY_MEDIA_SCHEMA = vol.Schema(
     {
         vol.Required("stream"): cv.string,
@@ -386,6 +399,7 @@ def _set_state(stream: str, url: str, title: str | None, content_id: str | None)
         "duration": None,
         "playing": False,
         "ended": False,
+        "audio": DEFAULT_AUDIO,
     }
 
 
@@ -484,22 +498,41 @@ async def _watch(hass: HomeAssistant, stream: str) -> None:
             if not state:
                 return
 
-            sent = await _sent_bytes(hass, stream)
-            if sent <= 0:
-                # No audio producer (any more). The track either ended
-                # or the playback was interrupted.
+            source_url, sent = await _pushed_source(hass, stream)
+            if not source_url:
+                # No audio producer any more. The track either ended
+                # normally or the playback was interrupted.
                 duration = state.get("duration")
                 position = state.get("position") or 0.0
                 ended = duration is not None and position >= duration - 0.75
                 state["playing"] = False
                 state["ended"] = ended
                 state["position"] = position
+
+                if ended:
+                    _LOGGER.info(
+                        "Playback of %s on %s finished (position %.1fs)",
+                        state.get("title"),
+                        stream,
+                        position,
+                    )
+                    return
+
+                # The playback was interrupted. The most common reason is
+                # a page reload: the browser drops the WebRTC connection
+                # to the camera, go2rtc stops the camera with it, and the
+                # audio that was pushed through the backchannel dies with
+                # it. The track is resumed where it stopped, so the music
+                # keeps playing even though nobody is looking at the
+                # dashboard.
+                if await _async_resume(hass, stream, state):
+                    continue
+
                 _LOGGER.info(
-                    "Playback of %s on %s stopped (position %.1fs, ended=%s)",
+                    "Playback of %s on %s was interrupted (position %.1fs)",
                     state.get("title"),
                     stream,
                     position,
-                    ended,
                 )
                 return
 
@@ -512,6 +545,59 @@ async def _watch(hass: HomeAssistant, stream: str) -> None:
         raise
     except Exception as exc:  # noqa: BLE001 - a watcher must never crash
         _LOGGER.debug("Playback watcher for %s stopped: %s", stream, exc)
+
+
+async def _async_resume(hass: HomeAssistant, stream: str, state: dict) -> bool:
+    """Resume an interrupted track where it stopped.
+
+    Returns True when the track was resumed, so the watcher keeps
+    watching it.
+    """
+    attempts = state.get("resume_attempts") or 0
+    if attempts >= RESUME_ATTEMPTS:
+        return False
+
+    position = float(state.get("position") or 0.0)
+    duration = state.get("duration")
+    if duration is not None and position >= duration - 0.75:
+        # The track reached its end - that is not an interruption.
+        return False
+
+    state["resume_attempts"] = attempts + 1
+
+    # The camera needs a moment to come back after the browser
+    # reconnected to it.
+    await asyncio.sleep(RESUME_DELAY)
+
+    # Somebody might have stopped the track in the meantime.
+    if _STATE.get(stream) is not state:
+        return False
+
+    url = with_start(state.get("url") or "", position)
+    audio = state.get("audio") or DEFAULT_AUDIO
+
+    _LOGGER.info(
+        "Resuming %s on %s at %.1fs (attempt %s)",
+        state.get("title"),
+        stream,
+        position,
+        attempts + 1,
+    )
+
+    try:
+        await Speaker(hass, stream, audio).async_play(url)
+    except HomeAssistantError as exc:
+        _LOGGER.warning("Could not resume %s on %s: %s", state.get("title"), stream, exc)
+        return False
+
+    state["playing"] = True
+    state["ended"] = False
+    state["start"] = position
+    state["position"] = position
+    # The budget is not reset here on purpose: a resume that does not
+    # really take effect would otherwise retry forever. It is reset when
+    # the track is played again by hand.
+    return True
 
 
 async def async_play_media(call: ServiceCall) -> None:
@@ -574,6 +660,9 @@ async def async_play_media(call: ServiceCall) -> None:
     state["duration"] = duration
     state["playing"] = True
     state["ended"] = False
+    state["audio"] = audio
+    # An explicit play starts a fresh attempt budget.
+    state["resume_attempts"] = 0
     _start_watcher(hass, stream)
 
 
