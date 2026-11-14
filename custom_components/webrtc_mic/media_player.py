@@ -84,7 +84,7 @@ class WebRTCPlayer(MediaPlayerEntity):
         self._attr_name = name
         self._attr_unique_id = stream
         self.audio = audio
-        self.media_server = media_server
+        self.media_server = (media_server or "").rstrip("/")
         self.music_library = music_library or {}
 
         # Playback state used to expose a progress bar.
@@ -220,10 +220,14 @@ class WebRTCPlayer(MediaPlayerEntity):
         self._stamp_position(start)
 
     def _lock(self) -> asyncio.Lock:
-        """Return the push lock, creating it on the running event loop."""
-        if self._push_lock is None:
-            self._push_lock = asyncio.Lock()
-        return self._push_lock
+        """Return the push lock of this stream.
+
+        The lock is shared with the speaker services, so the dashboard and
+        a script cannot push two sources to the same camera at the same
+        time - go2rtc accepts only one pushed source per destination and
+        the second one would be left behind as an orphan producer.
+        """
+        return utils.stream_lock(self.unique_id)
 
     async def _async_purge_sources(self, attempts: int = 6) -> int:
         """Force every pushed audio source off the camera.

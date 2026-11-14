@@ -40,6 +40,26 @@ DOMAIN = "webrtc_mic"
 # instead of loading it twice.
 DATA_EXTRA_MODULES = "webrtc_mic_extra_modules"
 
+# Key in hass.data that holds the URL of the plain HTTP media server that
+# serves the audio to go2rtc. It is used to rewrite the signed Home
+# Assistant media URLs (which go2rtc cannot fetch) and to add the "start"
+# parameter that lets a track resume in the middle.
+MEDIA_SERVER_KEY = "webrtc_mic_media_server"
+
+# One lock per go2rtc stream, shared by the media_player platform and by
+# the speaker services. go2rtc accepts only one pushed source per
+# destination, so both paths have to take the same lock - otherwise the
+# card and a script can push two sources at the same time and leave an
+# orphan producer behind.
+_STREAM_LOCKS: dict = {}
+
+
+def stream_lock(name: str) -> asyncio.Lock:
+    """Return the push lock of a go2rtc stream, creating it if needed."""
+    if name not in _STREAM_LOCKS:
+        _STREAM_LOCKS[name] = asyncio.Lock()
+    return _STREAM_LOCKS[name]
+
 BINARY_VERSION = "1.9.12"
 
 SYSTEM = {

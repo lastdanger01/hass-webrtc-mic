@@ -86,6 +86,18 @@ play_media:
       default: pcma
       selector:
         text:
+    start:
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 86400
+          step: 0.5
+          unit_of_measurement: s
+      description: >-
+        Resume the track at this position (seconds). When it is not given,
+        the integration resumes an interrupted track where it stopped and
+        starts a finished track from the beginning.
 
 stop_media:
   fields:

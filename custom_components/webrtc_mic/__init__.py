@@ -72,6 +72,14 @@ CONFIG_SCHEMA = vol.Schema(
             {
                 # URL of the go2rtc server. Omit to auto-detect it.
                 vol.Optional("url"): cv.string,
+                # URL of a plain HTTP media server that serves the audio
+                # to go2rtc. Home Assistant signs the media URLs it hands
+                # out and the signature is bound to the client that asked
+                # for it, so go2rtc (another host) gets a 401. The plain
+                # server serves the same files without a signature and
+                # understands a "start" parameter, which is what lets a
+                # track resume in the middle.
+                vol.Optional("media_server"): cv.string,
             },
             extra=vol.ALLOW_EXTRA,
         ),
@@ -93,6 +101,12 @@ async def async_setup(hass: HomeAssistant, config: dict):
     if not url:
         url = await utils.detect_go2rtc(hass) or utils.DEFAULT_URL
     hass.data[DOMAIN] = url
+
+    # The plain HTTP media server that serves the audio to go2rtc. It is
+    # used to rewrite the signed Home Assistant media URLs (go2rtc gets a
+    # 401 on those) and to add the "start" parameter that lets a track
+    # resume in the middle.
+    hass.data[utils.MEDIA_SERVER_KEY] = (yaml_config.get("media_server") or "").rstrip("/")
 
     # 1. Serve lovelace card and register it with the frontend.
     #    This is done here and in async_setup_entry, so the card is
@@ -522,6 +536,13 @@ class MediaStatusView(HomeAssistantView):
                 state["playing"] = playing
             else:
                 state = {"stream": stream, "playing": playing}
+
+            # The position and the length of the track, so the card can
+            # show a progress bar and know whether the track ended
+            # normally or was interrupted.
+            state.setdefault("position", 0.0)
+            state.setdefault("duration", None)
+            state.setdefault("ended", False)
 
             return web.json_response(state)
 
