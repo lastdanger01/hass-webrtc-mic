@@ -111,6 +111,16 @@ def read_module_source(path: str) -> str:
     with open(path, encoding="utf-8") as file:
         return file.read()
 
+
+def read_rewritten_module(directory: str) -> str:
+    """Read the card module and rewrite its imports.
+
+    Both the read and the hashing of the imported files block, so this
+    has to run in the executor.
+    """
+    source = read_module_source(os.path.join(directory, "webrtc-mic-camera.js"))
+    return rewrite_imports(source, directory)
+
 # Key in hass.data that holds the extra module urls we registered with
 # the frontend, so an older version of our own module can be replaced
 # instead of loading it twice.
@@ -335,7 +345,8 @@ async def init_resource(
     files change, so the browser always fetches the current one.
     """
     if directory is not None:
-        version = bundle_digest(directory)
+        # Reading the files blocks, so it happens in the executor.
+        version = await hass.async_add_executor_job(bundle_digest, directory)
     else:
         version = ver
 

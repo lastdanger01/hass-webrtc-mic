@@ -492,13 +492,13 @@ class CardModuleView(HomeAssistantView):
         directory = Path(__file__).parent / "www"
 
         try:
+            # Reading the file and hashing the imported files blocks, so
+            # it all happens in the executor.
             source = await hass.async_add_executor_job(
-                utils.read_module_source, str(directory / "webrtc-mic-camera.js")
+                utils.read_rewritten_module, str(directory)
             )
         except OSError:
             raise HTTPNotFound()
-
-        source = utils.rewrite_imports(source, str(directory))
 
         return web.Response(
             body=source.encode("utf-8"),
