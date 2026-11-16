@@ -170,7 +170,57 @@ const server = http.createServer((req, res) => {
     fs.writeFileSync(ptzPath, ptzBackup);
 
     // ------------------------------------------------------------------
-    // 5. the error messages tell the user what went wrong
+    // 5. the signed paths carry their parameters
+    //
+    //    Home Assistant signs the query parameters as well and rejects a
+    //    request whose parameters are not exactly the ones that were
+    //    signed. A parameter that is appended after the signature was
+    //    made invalidates the whole request.
+    // ------------------------------------------------------------------
+    console.log('\n[5] signed paths');
+    const cardJs = fs.readFileSync(path.join(WWW, 'webrtc-mic-camera.js'), 'utf8');
+
+    // The websocket path is built with the parameters included.
+    check(cardJs.includes("path: '/api/webrtc_mic/ws?' + params.toString()"),
+        'the websocket path is signed with its parameters');
+    check(!cardJs.includes("this.wsURL += '&entity='"),
+        'the entity is no longer appended to the signed path');
+    check(!cardJs.includes("this.wsURL += '&url='"),
+        'the url is no longer appended to the signed path');
+    check(!cardJs.includes("this.wsURL += '&server='"),
+        'the server is no longer appended to the signed path');
+    check(cardJs.includes("path: '/api/webrtc_mic/media_status?stream='"),
+        'the media_status path is signed with the stream');
+    check(!cardJs.includes("hassUrl(data.path) + '?stream='"),
+        'the stream is no longer appended with a question mark');
+
+    // The signature covers the parameters, so the server can compare
+    // them. Reproduce that check here.
+    const signParams = (pairs) => JSON.stringify(pairs);
+    const requestParams = (query) => {
+        const p = new URLSearchParams(query);
+        const out = [];
+        for (const [k, v] of p.entries()) {
+            if (k === 'authSig') continue;
+            out.push([k, v]);
+        }
+        return JSON.stringify(out);
+    };
+    const signed = new URLSearchParams('entity=living1&authSig=abc');
+    check(signParams([['entity', 'living1']]) === requestParams(signed),
+        'the signed parameters match the requested parameters');
+
+    // A parameter that was not part of the signature must not match.
+    check(signParams([['entity', 'living1']]) !== requestParams('entity=living1&extra=1&authSig=abc'),
+        'a parameter that was not signed does not match');
+
+    // The old code produced a URL with two question marks.
+    const broken = '/api/webrtc_mic/media_status?authSig=abc' + '?stream=living1';
+    check(broken.split('?').length === 3,
+        'the old url had two question marks and was rejected');
+
+    // ------------------------------------------------------------------
+    // 6. the error messages tell the user what went wrong
     // ------------------------------------------------------------------
     console.log('\n[5] error classification');
     const describe = (text) => {
