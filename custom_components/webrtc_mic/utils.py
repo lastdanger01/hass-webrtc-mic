@@ -1,3 +1,4 @@
+import hashlib
 import io
 import logging
 import os
@@ -34,6 +35,81 @@ from homeassistant.helpers.entity_component import DATA_INSTANCES
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "webrtc_mic"
+
+# The card module and the two files it imports.
+CARD_MODULE_FILES = ("webrtc-mic-camera.js", "video-rtc.js", "digital-ptz.js")
+
+
+def file_digest(path) -> str:
+    """Return a short content hash of a file.
+
+    The hash is used to make the URL of a file change whenever its
+    content changes. Home Assistant serves static files with
+    ``Cache-Control: public, max-age=2678400`` (31 days, hard-coded in
+    ``components/http/static.py``), so a browser kept the old card module
+    for a month after an update and the Lovelace dashboard showed
+
+        Custom element not found: webrtc-mic-camera
+
+    A hard refresh (Ctrl+Shift+R) fixed it every single time. With the
+    content hash in the URL the browser has to fetch the new file,
+    because it is a different URL.
+    """
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as file:
+            for chunk in iter(lambda: file.read(65536), b""):
+                digest.update(chunk)
+    except OSError:
+        return "0" * 12
+    return digest.hexdigest()[:12]
+
+
+def bundle_digest(directory) -> str:
+    """Return a hash over all card module files.
+
+    The card module imports the other two files, so a change in any of
+    them changes the card module too. The hash therefore covers the
+    whole set, so the URL of the card module changes when any part of
+    it changes.
+    """
+    digest = hashlib.sha256()
+    for name in CARD_MODULE_FILES:
+        digest.update(name.encode())
+        digest.update(file_digest(os.path.join(directory, name)).encode())
+    return digest.hexdigest()[:12]
+
+
+# Relative imports inside the card module, e.g.
+#     import {VideoRTC} from './video-rtc.js?v=1.9.19-mic6';
+_IMPORT_RE = re.compile(
+    r"""(?P<head>(?:from|import)\s*['"])(?P<path>\./[^'"]+?\.js)(?:\?[^'"]*)?(?P<tail>['"])"""
+)
+
+
+def rewrite_imports(source: str, directory: str) -> str:
+    """Rewrite the relative imports of a module to carry a content hash.
+
+    The card module imports two other files. They are served with the
+    same 31 day cache header as everything else, so a change in one of
+    them would not be picked up by the browser either. Every import is
+    therefore rewritten to point at the content hash of the imported
+    file, which changes whenever that file changes.
+    """
+
+    def replace(match: re.Match) -> str:
+        target = match.group("path")
+        name = os.path.basename(target)
+        digest = file_digest(os.path.join(directory, name))
+        return f'{match.group("head")}{target}?v={digest}{match.group("tail")}'
+
+    return _IMPORT_RE.sub(replace, source)
+
+
+def read_module_source(path: str) -> str:
+    """Read a card module file as text."""
+    with open(path, encoding="utf-8") as file:
+        return file.read()
 
 # Key in hass.data that holds the extra module urls we registered with
 # the frontend, so an older version of our own module can be replaced
@@ -144,12 +220,33 @@ def validate_binary(hass: HomeAssistant) -> Optional[str]:
     return filename
 
 
-async def register_static_path(hass: HomeAssistant, url_path: str, path: str):
+async def register_static_path(
+    hass: HomeAssistant, url_path: str, path: str, cache_headers: bool = True
+):
+    """Serve a directory of static files.
+
+    ``cache_headers`` controls the ``Cache-Control`` header. Home
+    Assistant's static file handler hard-codes a 31 day cache
+    (``CACHE_TIME = 31 * 86400`` in ``components/http/static.py``), and
+    that is what made the browser keep an old version of the card
+    module for a month after an update:
+
+        Custom element not found: webrtc-mic-camera
+
+    The old module was still cached, so the new element was never
+    registered and the card could not be created. A hard refresh
+    (Ctrl+Shift+R) fixed it every time.
+
+    The card files are therefore served *without* the long cache
+    header. The URL still carries a content hash (see
+    ``init_resource``), so the browser can cache them safely and a new
+    file always gets a new URL.
+    """
     if (MAJOR_VERSION, MINOR_VERSION) >= (2024, 7):
         from homeassistant.components.http import StaticPathConfig
 
         await hass.http.async_register_static_paths(
-            [StaticPathConfig(url_path, path, True)]
+            [StaticPathConfig(url_path, path, cache_headers)]
         )
     else:
         hass.http.register_static_path(url_path, path)
@@ -209,7 +306,9 @@ def _add_extra_module(hass: HomeAssistant, url: str) -> None:
     known.add(url)
 
 
-async def init_resource(hass: HomeAssistant, url: str, ver: str) -> bool:
+async def init_resource(
+    hass: HomeAssistant, url: str, ver: str, directory=None
+) -> bool:
     """Make the Lovelace frontend load the card module.
 
     The module has to reach the browser through two different channels,
@@ -226,8 +325,21 @@ async def init_resource(hass: HomeAssistant, url: str, ver: str) -> bool:
 
     Both channels are always used now, and a failure is logged instead
     of being swallowed.
+
+    The URL carries the content hash of the card files, not just the
+    version of the integration. Home Assistant serves static files with
+    a 31 day cache header, so a version that did not change (a hotfix
+    of the JS files, or an install that kept the same manifest
+    version) left the browser with a month old module and the card
+    refused to load. The content hash changes whenever any of the card
+    files change, so the browser always fetches the current one.
     """
-    url2 = f"{url}?v={ver}"
+    if directory is not None:
+        version = bundle_digest(directory)
+    else:
+        version = ver
+
+    url2 = f"{url}?v={version}"
     changed = False
 
     resources = _lovelace_resources(hass)
@@ -256,7 +368,7 @@ async def init_resource(hass: HomeAssistant, url: str, ver: str) -> bool:
             )
 
             if existing is not None:
-                if existing.get("url", "").endswith(ver) and existing.get(
+                if existing.get("url", "").endswith(version) and existing.get(
                     "res_type"
                 ) == "module":
                     pass  # already up to date

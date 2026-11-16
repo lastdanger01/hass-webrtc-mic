@@ -162,6 +162,9 @@ class WebRTCCamera extends VideoRTC {
 
         this.setStatus('Loading..');
 
+        // Every connection needs a fresh signature. The signed path is
+        // valid for about 30 seconds, so a signature made at page load
+        // is already expired by the time the user opens the camera.
         this.hass.callWS({
             type: 'auth/sign_path', path: '/api/webrtc_mic/ws'
         }).then(data => {
@@ -190,17 +193,99 @@ class WebRTCCamera extends VideoRTC {
                 this.setStatus('error', 'unable to connect');
             }
         }).catch(er => {
-            this.setStatus('error', er);
+            this.setStatus('error', this.describeError(er));
         });
+    }
+
+    /**
+     * The browser does not tell us the HTTP status of a failed WebSocket
+     * handshake. A socket that closes before it opens was rejected, and
+     * the most common reason is an expired or invalid signature.
+     *
+     * A new signature is fetched and the connection is retried once.
+     * If it fails again, the error is shown instead of looping.
+     */
+    onhandshakefailed() {
+        // The reconnect timer of the base class would open a second
+        // socket with the same stale signature. Cancel it, this method
+        // reconnects on its own.
+        if (this.reconnectTID) {
+            clearTimeout(this.reconnectTID);
+            this.reconnectTID = 0;
+        }
+
+        if (this.signatureRetried) {
+            this.setStatus('error', 'connection rejected, check the signature');
+            return;
+        }
+
+        this.signatureRetried = true;
+
+        this.hass.callWS({
+            type: 'auth/sign_path', path: '/api/webrtc_mic/ws'
+        }).then(data => {
+            this.wsURL = 'ws' + this.hass.hassUrl(data.path).substring(4);
+
+            if (this.config.entity) {
+                this.wsURL += '&entity=' + this.config.entity;
+            } else if (this.config.url) {
+                this.wsURL += '&url=' + encodeURIComponent(this.config.url);
+            }
+            if (this.config.server) {
+                this.wsURL += '&server=' + encodeURIComponent(this.config.server);
+            }
+
+            this.onconnect();
+        }).catch(er => {
+            this.setStatus('error', this.describeError(er));
+        });
+    }
+
+    /**
+     * Turn an error from the backend into a message that says what
+     * actually went wrong, instead of a raw "streams: 401 Unauthorized".
+     *
+     * @param er {string|Error|object}
+     * @return {string}
+     */
+    describeError(er) {
+        const text = (er && er.message) ? er.message : String(er || '');
+
+        if (!text) return 'unknown error';
+
+        // The go2rtc stream does not exist at all.
+        if (text.includes('stream') && (text.includes('not found') || text.includes('no such stream'))) {
+            return 'go2rtc stream not found';
+        }
+
+        // The stream exists but the camera refused the credentials.
+        if (text.includes('401') || text.includes('Unauthorized')) {
+            return 'camera source rejected the credentials (401)';
+        }
+
+        // The signed path was not valid any more.
+        if (text.includes('authSig') || text.includes('signature') || text.includes('Invalid signature')) {
+            return 'the signed link expired, please reload the page';
+        }
+
+        // The backend could not reach go2rtc at all.
+        if (text.includes('go2rtc')) {
+            return 'go2rtc is not reachable';
+        }
+
+        return text;
     }
 
     onopen() {
         const result = super.onopen();
 
+        // The connection worked, so the next failure may sign again.
+        this.signatureRetried = false;
+
         this.onmessage['stream'] = msg => {
             switch (msg.type) {
                 case 'error':
-                    this.setStatus('error', msg.value);
+                    this.setStatus('error', this.describeError(msg.value));
                     break;
                 case 'mse':
                 case 'hls':

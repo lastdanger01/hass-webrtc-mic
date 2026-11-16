@@ -92,6 +92,11 @@ CONFIG_SCHEMA = vol.Schema(
 HLS_COOKIE = "webrtc-mic-hls-session"
 HLS_SESSION = str(uuid.uuid4())
 
+# Key in hass.data that remembers whether the card module view was
+# already registered. Registering the same route twice makes aiohttp
+# refuse to start.
+DATA_CARD_VIEW = "webrtc_mic_card_view"
+
 
 async def async_setup(hass: HomeAssistant, config: dict):
     # 0. go2rtc URL from YAML (if any). The config entry overwrites it later.
@@ -200,11 +205,25 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     "Custom element doesn't exist: webrtc-mic-camera".
     """
     path = Path(__file__).parent / "www"
-    for name in ("video-rtc.js", "webrtc-mic-camera.js", "digital-ptz.js"):
-        await utils.register_static_path(hass, "/webrtc_mic/" + name, str(path / name))
+
+    # Serve the card module through our own view, so the imports can be
+    # rewritten to carry a content hash and the long cache header of the
+    # Home Assistant static file handler can be avoided.
+    if DATA_CARD_VIEW not in hass.data:
+        hass.data[DATA_CARD_VIEW] = True
+        hass.http.register_view(CardModuleView)
+
+    # The other two files are plain scripts without imports, they are
+    # served as static paths without the 31 day cache header.
+    for name in ("video-rtc.js", "digital-ptz.js"):
+        await utils.register_static_path(
+            hass, "/webrtc_mic/" + name, str(path / name), cache_headers=False
+        )
 
     version = _integration_version(hass)
-    await utils.init_resource(hass, "/webrtc_mic/webrtc-mic-camera.js", str(version))
+    await utils.init_resource(
+        hass, "/webrtc_mic/webrtc-mic-camera.js", str(version), path
+    )
 
 
 def _integration_version(hass: HomeAssistant) -> str:
@@ -424,6 +443,53 @@ async def ws_poster(hass: HomeAssistant, params: dict) -> web.Response:
     async with async_get_clientsession(hass).get(url) as r:
         body = await r.read()
         return web.Response(body=body, content_type=r.content_type)
+
+
+class CardModuleView(HomeAssistantView):
+    """Serve the card module with rewritten imports.
+
+    Two problems are solved here.
+
+    1. Home Assistant serves static files with
+       ``Cache-Control: public, max-age=2678400`` (31 days, hard-coded
+       in ``components/http/static.py``). The browser therefore kept the
+       old card module for a month after an update and the Lovelace
+       dashboard showed::
+
+           Custom element not found: webrtc-mic-camera
+
+       A hard refresh (Ctrl+Shift+R) fixed it every time. This view
+       serves the module without that cache header.
+
+    2. The card module imports ``video-rtc.js`` and ``digital-ptz.js``.
+       Those imports carried a hand maintained version string, so a
+       change in one of them was not picked up by the browser either.
+       The imports are rewritten to carry the content hash of the
+       imported file.
+    """
+
+    url = "/webrtc_mic/webrtc-mic-camera.js"
+    name = "api:webrtc_mic:card_module"
+    requires_auth = False
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        directory = Path(__file__).parent / "www"
+
+        try:
+            source = await hass.async_add_executor_job(
+                utils.read_module_source, str(directory / "webrtc-mic-camera.js")
+            )
+        except OSError:
+            raise HTTPNotFound()
+
+        source = utils.rewrite_imports(source, str(directory))
+
+        return web.Response(
+            body=source.encode("utf-8"),
+            content_type="text/javascript",
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
 
 class WebSocketView(HomeAssistantView):
