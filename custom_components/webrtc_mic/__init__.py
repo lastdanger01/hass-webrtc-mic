@@ -92,9 +92,8 @@ CONFIG_SCHEMA = vol.Schema(
 HLS_COOKIE = "webrtc-mic-hls-session"
 HLS_SESSION = str(uuid.uuid4())
 
-# Key in hass.data that remembers whether the card module view was
-# already registered. Registering the same route twice makes aiohttp
-# refuse to start.
+# Key in hass.data that remembers which card routes were already
+# registered. aiohttp refuses to register the same route twice.
 DATA_CARD_VIEW = "webrtc_mic_card_view"
 
 
@@ -119,8 +118,14 @@ async def async_setup(hass: HomeAssistant, config: dict):
     await _async_register_card(hass)
 
     # 3. Serve html page
+    #    Without the 31 day cache header: this page loads the card module
+    #    and changed in v1.0.33. A cached copy would keep pointing at the
+    #    module the browser already has.
     await utils.register_static_path(
-        hass, "/webrtc_mic/embed", str(Path(__file__).parent / "www" / "embed.html")
+        hass,
+        "/webrtc_mic/embed",
+        str(Path(__file__).parent / "www" / "embed.html"),
+        cache_headers=False,
     )
 
     # 4. Serve WebSocket API
@@ -206,18 +211,28 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     """
     path = Path(__file__).parent / "www"
 
+    # This runs from the YAML setup, from the config entry setup and
+    # from the reload_card service. aiohttp refuses to register the same
+    # route twice ("Added route will never be executed"), so the routes
+    # are only registered once.
+    registered = hass.data.setdefault(DATA_CARD_VIEW, set())
+
     # Serve the card module through our own view, so the imports can be
     # rewritten to carry a content hash and the long cache header of the
     # Home Assistant static file handler can be avoided.
-    if DATA_CARD_VIEW not in hass.data:
-        hass.data[DATA_CARD_VIEW] = True
+    if "view" not in registered:
+        registered.add("view")
         hass.http.register_view(CardModuleView)
 
     # The other two files are plain scripts without imports, they are
     # served as static paths without the 31 day cache header.
     for name in ("video-rtc.js", "digital-ptz.js"):
+        url_path = "/webrtc_mic/" + name
+        if url_path in registered:
+            continue
+        registered.add(url_path)
         await utils.register_static_path(
-            hass, "/webrtc_mic/" + name, str(path / name), cache_headers=False
+            hass, url_path, str(path / name), cache_headers=False
         )
 
     version = _integration_version(hass)
