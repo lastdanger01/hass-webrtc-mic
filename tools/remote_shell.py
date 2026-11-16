@@ -202,6 +202,18 @@ def run(command, timeout=90, keep=False):
         wsend(b"\x03")
         time.sleep(0.4)
 
+        # Remove the leftovers of earlier runs. This happens before the
+        # command writes its own output, so the cleanup cannot delete
+        # the file that is being read back.
+        wsend(
+            b"0find /config/www -maxdepth 1 -name 'rs_*' ! -name '"
+            + out_name.encode()
+            + b"' ! -name '"
+            + done_name.encode()
+            + b"' -delete 2>/dev/null; true\n"
+        )
+        time.sleep(0.8)
+
         script = (
             f"mkdir -p /config/www; "
             f"( {command} ) > /config/www/{out_name} 2>&1; "
