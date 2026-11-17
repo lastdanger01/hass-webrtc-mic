@@ -751,8 +751,16 @@ class DiagnosticView(HomeAssistantView):
             if not streams:
                 continue
 
+            # A frame is the authoritative answer. go2rtc only connects
+            # to a camera when somebody asks for a stream, so a healthy
+            # camera that nobody is watching has no connected producer
+            # and would look exactly like a broken one.
+            frame_bytes = await utils.go2rtc_frame_bytes(
+                hass, session=session, url=url, stream=name
+            )
+
             errors = await utils.go2rtc_log_errors(hass, session=session, url=url)
-            result = utils.diagnose_stream(streams, errors, name)
+            result = utils.diagnose_stream(streams, errors, name, frame_bytes)
             result["server"] = url
             return web.json_response(result)
 

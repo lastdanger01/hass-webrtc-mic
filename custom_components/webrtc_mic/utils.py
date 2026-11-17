@@ -10,7 +10,7 @@ import subprocess
 import zipfile
 from threading import Thread
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 import asyncio
 import aiohttp
@@ -785,6 +785,38 @@ def producer_is_connected(producer: dict) -> bool:
     return any(key in producer for key in _CONNECTED_PRODUCER_KEYS)
 
 
+async def go2rtc_frame_bytes(
+    hass: HomeAssistant, session=None, url: Optional[str] = None, stream: str = ""
+) -> Optional[int]:
+    """Fetch one JPEG frame from a go2rtc stream and return its size.
+
+    This is the authoritative check whether a camera delivers a picture.
+    ``/api/streams`` cannot answer that: a healthy camera that nobody is
+    watching has no connected producer, so it looks exactly like a
+    broken one. Asking for a frame makes go2rtc connect to the camera
+    and either produces an image or produces nothing.
+
+    Returns the number of bytes, or None when the request failed.
+    """
+    base = url
+    if not base:
+        entry = hass.data.get(DOMAIN)
+        base = "http://localhost:1984/" if isinstance(entry, Server) else entry
+
+    target = urljoin(base, "api/frame.jpeg") + "?src=" + quote(stream, safe="")
+
+    try:
+        if session is None:
+            session = async_get_clientsession(hass)
+        async with session.get(target, timeout=25) as r:
+            if r.status >= 400:
+                return None
+            body = await r.read()
+            return len(body)
+    except Exception:
+        return None
+
+
 async def go2rtc_log_errors(hass: HomeAssistant, session=None, url: Optional[str] = None) -> list:
     """Return the recent error lines of the go2rtc log.
 
@@ -827,14 +859,13 @@ def _mask_source(url: str) -> str:
     return re.sub(r"://([^:]+):[^@]+@", r"://\1:***@", url)
 
 
-def diagnose_stream(streams: dict, errors: list, name: str) -> dict:
+def diagnose_stream(streams: dict, errors: list, name: str, frame_bytes=None) -> dict:
     """Explain why a go2rtc stream shows no picture.
 
     Returns a dict with:
 
     ``ok``
-        True when the stream exists and at least one producer is
-        connected.
+        True when the camera delivers a picture.
     ``reason``
         A short machine readable reason: ``no_such_stream``,
         ``camera_unreachable``, ``credentials_rejected``,
@@ -843,6 +874,12 @@ def diagnose_stream(streams: dict, errors: list, name: str) -> dict:
         A human readable explanation.
     ``source``
         The masked source url, if there is one.
+
+    ``frame_bytes`` is the size of a JPEG frame fetched from the
+    camera. It is the authoritative answer: a healthy camera that
+    nobody is watching has no connected producer, so /api/streams
+    cannot tell it apart from a broken one. When it is None the
+    producer state is used instead, which is weaker but still useful.
 
     The most common real world cause is a wrong password: the Tapo
     cameras answer HTTP 401 on their stream endpoint, and go2rtc only
@@ -873,13 +910,14 @@ def diagnose_stream(streams: dict, errors: list, name: str) -> dict:
     if source:
         result["source"] = _mask_source(source)
 
-    if any(producer_is_connected(p) for p in producers):
+    # The frame is the truth. If it came back with data, the camera
+    # works, whatever the producer state says.
+    if frame_bytes:
         result["ok"] = True
         result["reason"] = "ok"
         result["detail"] = "The camera is connected and delivering a picture."
         return result
 
-    # The producer is not connected. Look for the matching error line.
     host = None
     if source:
         match = re.search(r"@([0-9.]+)", source)
@@ -909,6 +947,12 @@ def diagnose_stream(streams: dict, errors: list, name: str) -> dict:
                 "blocked by the network."
             )
             return result
+
+    if any(producer_is_connected(p) for p in producers):
+        result["ok"] = True
+        result["reason"] = "ok"
+        result["detail"] = "The camera is connected and delivering a picture."
+        return result
 
     result["reason"] = "camera_unreachable"
     result["detail"] = (
