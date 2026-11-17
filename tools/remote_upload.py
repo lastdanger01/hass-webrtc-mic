@@ -196,12 +196,49 @@ def upload(local_path, remote_path):
         time.sleep(1.0)
 
         chunks = [payload[i : i + CHUNK] for i in range(0, len(payload), CHUNK)]
-        for index, chunk in enumerate(chunks, start=1):
-            wsend(f"0printf '%s' '{chunk}' >> {b64_remote}\n".encode())
-            if index % 5 == 0:
-                time.sleep(0.5)
-            else:
-                time.sleep(0.15)
+
+        # The terminal drops characters when a lot is written to it at
+        # once, so the transfer is verified and resumed: after every
+        # batch the remote size is checked and only the missing tail is
+        # sent again.
+        size_name = f"up_{stamp}.size"
+        sent = 0
+        for attempt in range(12):
+            if sent >= len(chunks):
+                break
+            batch = chunks[sent : sent + 12]
+            for chunk in batch:
+                wsend(f"0printf '%s' '{chunk}' >> {b64_remote}\n".encode())
+                time.sleep(0.25)
+            sent += len(batch)
+            time.sleep(1.5)
+
+            wsend(f"0wc -c < {b64_remote} > /config/www/{size_name} 2>&1\n".encode())
+            got_size = -1
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                try:
+                    got_size = int(_fetch_local(size_name).decode().split()[0])
+                    break
+                except Exception:
+                    time.sleep(1.0)
+            if got_size < 0:
+                continue
+
+            want = len("".join(chunks[:sent]))
+            if got_size >= want:
+                break
+            # Some chunks were lost. Drop the partial tail and resend
+            # from the last complete chunk.
+            keep = (got_size // CHUNK) * CHUNK
+            if keep == 0 and got_size < CHUNK:
+                wsend(f"0: > {b64_remote}\n".encode())
+                time.sleep(1.0)
+                sent = 0
+                continue
+            wsend(f"0truncate -s {keep} {b64_remote}\n".encode())
+            time.sleep(1.0)
+            sent = keep // CHUNK
 
         time.sleep(1.5)
         wsend(
@@ -210,7 +247,7 @@ def upload(local_path, remote_path):
             f"echo DONE > /config/www/{done_name}\n".encode()
         )
 
-        deadline = time.time() + 90
+        deadline = time.time() + 180
         while time.time() < deadline:
             try:
                 if b"DONE" in _fetch_local(done_name):
