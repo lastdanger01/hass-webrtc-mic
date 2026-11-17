@@ -153,6 +153,87 @@ class WebRTCCamera extends VideoRTC {
         this.restoreMusicState();
     }
 
+    /**
+     * Build the query string of the websocket endpoint.
+     *
+     * The parameters have to be part of the path that gets signed, see
+     * signedWsPath().
+     *
+     * @return {URLSearchParams}
+     */
+    wsParams() {
+        const params = new URLSearchParams();
+
+        if (this.config.entity) {
+            params.set('entity', this.config.entity);
+        } else if (this.config.url) {
+            params.set('url', this.config.url);
+        }
+
+        if (this.config.server) {
+            params.set('server', this.config.server);
+        }
+
+        return params;
+    }
+
+    /**
+     * Ask Home Assistant for a signed websocket path.
+     *
+     * The signature covers the query parameters as well, and Home
+     * Assistant rejects a request whose parameters are not exactly the
+     * ones that were signed. A parameter that is appended after the
+     * signature was made therefore invalidates the whole request. The
+     * card used to do exactly that, and every connection ended up as
+     *
+     *     Custom element ... 401 Unauthorized
+     *
+     * which Home Assistant counts as a failed login attempt. Enough of
+     * those and the IP of the user gets banned.
+     *
+     * @return {Promise<string>} the signed path
+     */
+    signedWsPath() {
+        const params = this.wsParams();
+
+        if (!params.has('entity') && !params.has('url')) {
+            return Promise.reject(new Error('Missing url or entity'));
+        }
+
+        const path = '/api/webrtc_mic/ws?' + params.toString();
+
+        return this.hass.callWS({
+            type: 'auth/sign_path', path: path
+        }).then(data => data.path);
+    }
+
+    /**
+     * The poster is fetched over plain HTTP, so it needs its own signed
+     * path. It must not be part of the websocket path, otherwise the
+     * backend would answer the websocket handshake with the image.
+     *
+     * @return {Promise<string>} the url of the poster
+     */
+    posterUrl() {
+        const poster = this.config.poster;
+        const params = new URLSearchParams();
+        params.set('poster', poster);
+
+        return this.hass.callWS({
+            type: 'auth/sign_path', path: '/api/webrtc_mic/ws?' + params.toString()
+        }).then(data => {
+            const path = (data && data.path) ? data.path : '';
+            const url = this.hass.hassUrl(path);
+
+            // The signed path already carries the poster. The embed page
+            // has no signed path at all, there the poster is appended.
+            if (url.includes('poster=')) return url;
+
+            return url + (url.includes('?') ? '&' : '?') +
+                'poster=' + encodeURIComponent(poster);
+        });
+    }
+
     onconnect() {
         if (!this.config || !this.hass) return false;
         if (!this.isConnected || this.ws || this.pc) return false;
@@ -160,29 +241,26 @@ class WebRTCCamera extends VideoRTC {
         const divMode = this.querySelector('.mode').innerText;
         if (divMode === 'Loading..') return;
 
+        // Without a stream there is nothing to connect to, the card
+        // shows the poster only.
+        if (!this.config.entity && !this.config.url) {
+            this.setStatus('IMG');
+            return false;
+        }
+
         this.setStatus('Loading..');
 
-        this.hass.callWS({
-            type: 'auth/sign_path', path: '/api/webrtc_mic/ws'
-        }).then(data => {
+        // Every connection needs a fresh signature. The signed path is
+        // valid for about 30 seconds, so a signature made at page load
+        // is already expired by the time the user opens the camera.
+        this.signedWsPath().then(path => {
             if (this.config.poster && !this.config.poster_remote) {
-                this.video.poster = this.hass.hassUrl(data.path) + '&poster=' + encodeURIComponent(this.config.poster);
+                this.posterUrl().then(url => {
+                    this.video.poster = url;
+                }).catch(() => {});
             }
 
-            this.wsURL = 'ws' + this.hass.hassUrl(data.path).substring(4);
-
-            if (this.config.entity) {
-                this.wsURL += '&entity=' + this.config.entity;
-            } else if (this.config.url) {
-                this.wsURL += '&url=' + encodeURIComponent(this.config.url);
-            } else {
-                this.setStatus('IMG');
-                return;
-            }
-
-            if (this.config.server) {
-                this.wsURL += '&server=' + encodeURIComponent(this.config.server);
-            }
+            this.wsURL = 'ws' + this.hass.hassUrl(path).substring(4);
 
             if (super.onconnect()) {
                 this.setStatus('Loading...');
@@ -190,17 +268,87 @@ class WebRTCCamera extends VideoRTC {
                 this.setStatus('error', 'unable to connect');
             }
         }).catch(er => {
-            this.setStatus('error', er);
+            this.setStatus('error', this.describeError(er));
         });
+    }
+
+    /**
+     * The browser does not tell us the HTTP status of a failed WebSocket
+     * handshake. A socket that closes before it opens was rejected, and
+     * the most common reason is an expired or invalid signature.
+     *
+     * A new signature is fetched and the connection is retried once.
+     * If it fails again, the error is shown instead of looping.
+     */
+    onhandshakefailed() {
+        // The reconnect timer of the base class would open a second
+        // socket with the same stale signature. Cancel it, this method
+        // reconnects on its own.
+        if (this.reconnectTID) {
+            clearTimeout(this.reconnectTID);
+            this.reconnectTID = 0;
+        }
+
+        if (this.signatureRetried) {
+            this.setStatus('error', 'connection rejected, check the signature');
+            return;
+        }
+
+        this.signatureRetried = true;
+
+        this.signedWsPath().then(path => {
+            this.wsURL = 'ws' + this.hass.hassUrl(path).substring(4);
+            this.onconnect();
+        }).catch(er => {
+            this.setStatus('error', this.describeError(er));
+        });
+    }
+
+    /**
+     * Turn an error from the backend into a message that says what
+     * actually went wrong, instead of a raw "streams: 401 Unauthorized".
+     *
+     * @param er {string|Error|object}
+     * @return {string}
+     */
+    describeError(er) {
+        const text = (er && er.message) ? er.message : String(er || '');
+
+        if (!text) return 'unknown error';
+
+        // The go2rtc stream does not exist at all.
+        if (text.includes('stream') && (text.includes('not found') || text.includes('no such stream'))) {
+            return 'go2rtc stream not found';
+        }
+
+        // The stream exists but the camera refused the credentials.
+        if (text.includes('401') || text.includes('Unauthorized')) {
+            return 'camera source rejected the credentials (401)';
+        }
+
+        // The signed path was not valid any more.
+        if (text.includes('authSig') || text.includes('signature') || text.includes('Invalid signature')) {
+            return 'the signed link expired, please reload the page';
+        }
+
+        // The backend could not reach go2rtc at all.
+        if (text.includes('go2rtc')) {
+            return 'go2rtc is not reachable';
+        }
+
+        return text;
     }
 
     onopen() {
         const result = super.onopen();
 
+        // The connection worked, so the next failure may sign again.
+        this.signatureRetried = false;
+
         this.onmessage['stream'] = msg => {
             switch (msg.type) {
                 case 'error':
-                    this.setStatus('error', msg.value);
+                    this.setStatus('error', this.describeError(msg.value));
                     break;
                 case 'mse':
                 case 'hls':
@@ -1109,10 +1257,15 @@ class WebRTCCamera extends VideoRTC {
         // before the button is given up on.
         for (let attempt = 0; attempt < 6; attempt++) {
             try {
+                // The stream has to be part of the signed path. The old
+                // code appended it with a "?" after the signature, which
+                // made the whole request invalid and was counted as a
+                // failed login attempt by Home Assistant.
                 const data = await this.hass.callWS({
-                    type: 'auth/sign_path', path: '/api/webrtc_mic/media_status'
+                    type: 'auth/sign_path',
+                    path: '/api/webrtc_mic/media_status?stream=' + encodeURIComponent(stream)
                 });
-                const url = this.hass.hassUrl(data.path) + '?stream=' + encodeURIComponent(stream);
+                const url = this.hass.hassUrl(data.path);
                 const r = await fetch(url, { credentials: 'same-origin' });
                 if (!r.ok) return;
 

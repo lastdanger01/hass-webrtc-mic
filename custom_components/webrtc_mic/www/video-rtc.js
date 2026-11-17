@@ -458,8 +458,8 @@ export class VideoRTC extends HTMLElement {
         const ws = this.ws = new WebSocket(this.wsURL);
         ws.binaryType = 'arraybuffer';
         ws.addEventListener('open', () => this.onopen());
-        ws.addEventListener('close', () => {
-            if (this.ws === ws) this.onclose();
+        ws.addEventListener('close', ev => {
+            if (this.ws === ws) this.onclose(ev);
         });
 
         return true;
@@ -491,6 +491,11 @@ export class VideoRTC extends HTMLElement {
     onopen() {
         // CONNECTING => OPEN
         this.wsState = WebSocket.OPEN;
+
+        // Remember that the handshake succeeded. A socket that closes
+        // again without ever opening was rejected by the server, which
+        // for a signed path means the signature was invalid or expired.
+        this.wsEverOpened = true;
 
         // The socket may have been closed or replaced between the `open`
         // event firing and this handler running. Without this guard the card
@@ -548,8 +553,14 @@ export class VideoRTC extends HTMLElement {
     /**
      * @return {boolean} true if reconnection has started.
      */
-    onclose() {
+    onclose(ev) {
         if (this.wsState === WebSocket.CLOSED) return false;
+
+        // A socket that never opened means the HTTP handshake was
+        // rejected. The browser does not expose the status code, so the
+        // card has to guess from the timing.
+        const neverOpened = !this.wsEverOpened;
+        this.wsEverOpened = false;
 
         // CONNECTING, OPEN => CONNECTING
         this.wsState = WebSocket.CONNECTING;
@@ -562,6 +573,10 @@ export class VideoRTC extends HTMLElement {
             this.reconnectTID = 0;
             this.onconnect();
         }, delay);
+
+        if (neverOpened && typeof this.onhandshakefailed === 'function') {
+            this.onhandshakefailed(ev);
+        }
 
         return true;
     }
