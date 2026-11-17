@@ -339,6 +339,97 @@ class WebRTCCamera extends VideoRTC {
         return text;
     }
 
+    /**
+     * Ask the Home Assistant side why this camera shows no picture.
+     *
+     * The browser cannot work this out on its own. go2rtc answers
+     * /api/streams without any error information, so the only trace of
+     * a camera that refuses its password is a "401 Unauthorized" that
+     * arrives as a websocket error. The backend can see the go2rtc
+     * log, so it can tell the difference between
+     *
+     *   - a stream name that does not exist
+     *   - a camera that is offline
+     *   - a camera that rejected the password
+     *
+     * which are three completely different problems with three
+     * completely different fixes. Without this the card can only say
+     * "connection failed", and the user ends up looking in the wrong
+     * place.
+     *
+     * @return {Promise<{ok: boolean, reason: string, detail: string, source: string}>}
+     */
+    async diagnose() {
+        const params = this.wsParams();
+
+        // The same parameter the card uses for the connection. A go2rtc
+        // stream name is the usual case, a camera entity id also works.
+        let stream = params.get('entity') || params.get('url') || '';
+        if (!stream) return null;
+
+        // A full URL is not a stream name, so it cannot be looked up.
+        if (stream.includes('://')) return null;
+
+        try {
+            const data = await this.hass.callWS({
+                type: 'auth/sign_path',
+                path: '/api/webrtc_mic/diagnose?stream=' + encodeURIComponent(stream)
+            });
+            const url = this.hass.hassUrl(data.path);
+            const r = await fetch(url, { credentials: 'same-origin' });
+            if (!r.ok) return null;
+            return await r.json();
+        } catch (err) {
+            // A missing endpoint is not an error: an older backend simply
+            // has no diagnosis, the card still works.
+            console.debug('diagnose failed', err);
+            return null;
+        }
+    }
+
+    /**
+     * Show the reason a camera shows no picture.
+     *
+     * Called when the connection failed. The detail is longer than the
+     * one line the status area can show, so it also goes into the
+     * console, where the user can copy it.
+     *
+     * @param er {string|Error|object}
+     */
+    async showDiagnosis(er) {
+        const text = (er && er.message) ? er.message : String(er || '');
+
+        // Only the errors that come from the camera are worth a
+        // diagnosis. A stale signature or a missing endpoint is a
+        // different kind of problem.
+        const worth = text.includes('401') || text.includes('Unauthorized') ||
+            text.includes('not found') || text.includes('no such stream');
+        if (!worth) return;
+
+        const info = await this.diagnose();
+        if (!info || !info.detail) return;
+
+        const message = info.detail;
+        console.warn('[webrtc_mic] ' + message + (info.source ? ' (source: ' + info.source + ')' : ''));
+
+        // A short label for the status line, the full text in the
+        // console and as the tooltip of the status area.
+        const short = info.reason === 'credentials_rejected'
+            ? 'camera rejected the password (401)'
+            : info.reason === 'camera_unreachable'
+                ? 'camera did not answer'
+                : info.reason === 'no_such_stream'
+                    ? 'go2rtc stream not found'
+                    : info.reason === 'no_producer'
+                        ? 'stream has no source'
+                        : 'camera shows no picture';
+
+        this.setStatus('error', short);
+
+        const status = this.querySelector('.status');
+        if (status) status.title = message;
+    }
+
     onopen() {
         const result = super.onopen();
 
@@ -349,6 +440,9 @@ class WebRTCCamera extends VideoRTC {
             switch (msg.type) {
                 case 'error':
                     this.setStatus('error', this.describeError(msg.value));
+                    // The reason the camera shows no picture is only
+                    // known on the Home Assistant side, so ask it.
+                    this.showDiagnosis(msg.value);
                     break;
                 case 'mse':
                 case 'hls':

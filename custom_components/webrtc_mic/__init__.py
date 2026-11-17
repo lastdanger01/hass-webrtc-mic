@@ -7,7 +7,12 @@ from urllib.parse import urlencode, urljoin
 
 import voluptuous as vol
 from aiohttp import web
-from aiohttp.web_exceptions import HTTPUnauthorized, HTTPGone, HTTPNotFound
+from aiohttp.web_exceptions import (
+    HTTPUnauthorized,
+    HTTPGone,
+    HTTPNotFound,
+    HTTPBadRequest,
+)
 from homeassistant.components.binary_sensor import HomeAssistant  # fix tests
 from homeassistant.components.camera import async_get_stream_source, async_get_image
 from homeassistant.components.http import HomeAssistantView
@@ -234,6 +239,15 @@ async def _async_register_card(hass: HomeAssistant) -> None:
         await utils.register_static_path(
             hass, url_path, str(path / name), cache_headers=False
         )
+
+    # 5d. Explain why a camera shows no picture
+    #
+    # It is registered together with the card, because both are needed
+    # on every install and this function already guards against
+    # registering the same route twice.
+    if "/api/webrtc_mic/diagnose" not in registered:
+        registered.add("/api/webrtc_mic/diagnose")
+        hass.http.register_view(DiagnosticView)
 
     version = _integration_version(hass)
     await utils.init_resource(
@@ -689,6 +703,71 @@ class ViewersView(HomeAssistantView):
         summary = utils.count_viewers(states)
         summary["sources"] = tried
         return web.json_response(summary)
+
+
+class DiagnosticView(HomeAssistantView):
+    """Explain why a camera shows no picture.
+
+    The card cannot tell a dead camera from a wrong password: the
+    browser only sees "connection failed", and go2rtc itself answers
+    /api/streams without any error information. This view does the
+    diagnosis on the Home Assistant side, where the go2rtc API and its
+    log are reachable, and returns a reason the card can show.
+
+    The endpoint is signed like the other ones, so the browser can call
+    it from the dashboard without mixed-content problems.
+    """
+
+    url = "/api/webrtc_mic/diagnose"
+    name = "api:webrtc_mic:diagnose"
+    requires_auth = False
+
+    async def get(self, request: web.Request):
+        if not utils.validate_signed_request(request):
+            raise HTTPUnauthorized()
+
+        hass: HomeAssistant = request.app["hass"]
+        name = request.query.get("stream")
+        if not name:
+            raise HTTPBadRequest()
+
+        configured = hass.data.get(DOMAIN)
+        if isinstance(configured, utils.Server):
+            configured = "http://localhost:1984/"
+
+        candidates = []
+        if configured:
+            candidates.append(configured)
+        for url in utils.candidate_urls(hass):
+            if url not in candidates:
+                candidates.append(url)
+
+        session = async_get_clientsession(hass)
+
+        for url in candidates:
+            streams = await utils.go2rtc_streams_state(
+                hass, session=session, url=url
+            )
+            if not streams:
+                continue
+
+            errors = await utils.go2rtc_log_errors(hass, session=session, url=url)
+            result = utils.diagnose_stream(streams, errors, name)
+            result["server"] = url
+            return web.json_response(result)
+
+        return web.json_response(
+            {
+                "stream": name,
+                "ok": False,
+                "reason": "no_go2rtc",
+                "detail": (
+                    "No go2rtc instance answered. Check that go2rtc is "
+                    "running and that its URL is configured correctly."
+                ),
+                "source": None,
+            }
+        )
 
 
 class HLSView(HomeAssistantView):

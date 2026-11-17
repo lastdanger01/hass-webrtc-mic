@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import logging
 import os
 import platform
@@ -38,6 +39,15 @@ DOMAIN = "webrtc_mic"
 
 # The card module and the two files it imports.
 CARD_MODULE_FILES = ("webrtc-mic-camera.js", "video-rtc.js", "digital-ptz.js")
+
+# Keys that go2rtc adds to a producer entry once the connection is up.
+#
+# A producer that is not connected is reported as {"url": "..."} and
+# nothing else. As soon as it is connected it also carries an id, the
+# number of received bytes, the medias and the sdp. The difference is
+# the only way to tell a dead camera from a working one through the
+# API - /api/streams itself never reports the error.
+_CONNECTED_PRODUCER_KEYS = ("id", "bytes_recv", "medias", "sdp", "remote_addr")
 
 
 def file_digest(path) -> str:
@@ -759,6 +769,153 @@ async def go2rtc_streams_state(
         return {}
 
     return streams if isinstance(streams, dict) else {}
+
+
+def producer_is_connected(producer: dict) -> bool:
+    """Return True if a go2rtc producer is connected to its camera.
+
+    go2rtc reports a producer that could not connect as ``{"url": ...}``
+    and nothing else. A connected producer also carries an id, the
+    number of received bytes and the medias it offers. The difference
+    is the only reliable way to tell a dead camera from a working one
+    through the API, because /api/streams never reports the error.
+    """
+    if not isinstance(producer, dict):
+        return False
+    return any(key in producer for key in _CONNECTED_PRODUCER_KEYS)
+
+
+async def go2rtc_log_errors(hass: HomeAssistant, session=None, url: Optional[str] = None) -> list:
+    """Return the recent error lines of the go2rtc log.
+
+    go2rtc keeps its log in memory and exposes it at /api/log as one
+    JSON object per line. The error lines name the failing source, so
+    they are what turns "the camera shows nothing" into "the camera
+    rejected the credentials".
+    """
+    base = url
+    if not base:
+        entry = hass.data.get(DOMAIN)
+        base = "http://localhost:1984/" if isinstance(entry, Server) else entry
+
+    try:
+        if session is None:
+            session = async_get_clientsession(hass)
+        r = await session.get(urljoin(base, "api/log"), timeout=5)
+        if r.status >= 400:
+            return []
+        raw = await r.text()
+    except Exception:
+        return []
+
+    out = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if item.get("level") in ("error", "warn", "warning"):
+            out.append(item)
+    return out
+
+
+def _mask_source(url: str) -> str:
+    """Hide the password in a go2rtc source url."""
+    return re.sub(r"://([^:]+):[^@]+@", r"://\1:***@", url)
+
+
+def diagnose_stream(streams: dict, errors: list, name: str) -> dict:
+    """Explain why a go2rtc stream shows no picture.
+
+    Returns a dict with:
+
+    ``ok``
+        True when the stream exists and at least one producer is
+        connected.
+    ``reason``
+        A short machine readable reason: ``no_such_stream``,
+        ``camera_unreachable``, ``credentials_rejected``,
+        ``no_producer`` or ``ok``.
+    ``detail``
+        A human readable explanation.
+    ``source``
+        The masked source url, if there is one.
+
+    The most common real world cause is a wrong password: the Tapo
+    cameras answer HTTP 401 on their stream endpoint, and go2rtc only
+    logs that as "streams: 401 Unauthorized". Without this the card
+    can only say "connection failed", which sends the user looking in
+    completely the wrong place.
+    """
+    result = {"stream": name, "ok": False, "reason": "unknown", "detail": "", "source": None}
+
+    state = (streams or {}).get(name)
+    if state is None:
+        result["reason"] = "no_such_stream"
+        result["detail"] = (
+            f"go2rtc has no stream called '{name}'. "
+            "Check the name, or set it to a camera entity id."
+        )
+        return result
+
+    producers = state.get("producers") or []
+    if not producers:
+        result["reason"] = "no_producer"
+        result["detail"] = (
+            f"go2rtc knows the stream '{name}' but it has no source configured."
+        )
+        return result
+
+    source = producers[0].get("url") if isinstance(producers[0], dict) else None
+    if source:
+        result["source"] = _mask_source(source)
+
+    if any(producer_is_connected(p) for p in producers):
+        result["ok"] = True
+        result["reason"] = "ok"
+        result["detail"] = "The camera is connected and delivering a picture."
+        return result
+
+    # The producer is not connected. Look for the matching error line.
+    host = None
+    if source:
+        match = re.search(r"@([0-9.]+)", source)
+        if match:
+            host = match.group(1)
+
+    for item in errors:
+        message = str(item.get("error") or item.get("message") or "")
+        url = str(item.get("url") or "")
+        if host and host not in message and host not in url:
+            continue
+
+        if "401" in message or "Unauthorized" in message:
+            result["reason"] = "credentials_rejected"
+            result["detail"] = (
+                "The camera rejected the credentials (HTTP 401). The password "
+                "in the go2rtc configuration does not match this camera. "
+                "Compare it with a camera that works - the same password "
+                "group may have been assigned to the wrong camera."
+            )
+            return result
+
+        if "i/o timeout" in message or "no route to host" in message:
+            result["reason"] = "camera_unreachable"
+            result["detail"] = (
+                f"The camera {host or ''} did not answer. It is offline or "
+                "blocked by the network."
+            )
+            return result
+
+    result["reason"] = "camera_unreachable"
+    result["detail"] = (
+        f"The camera {host or ''} is not delivering a picture. The producer "
+        "is configured but never connected."
+    )
+    return result
 
 
 def count_viewers(streams: dict) -> dict:
